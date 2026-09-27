@@ -3,6 +3,7 @@ import { api, apiUrl, downloadExcel, fmtDate, hhmm, hms, todayISO } from './api'
 import { getThemePref, setThemePref } from './theme'
 import { ALARM_SOUNDS, getRatePref, getVoicePref, isNatural, playAlarmTone, setRatePref, setVoicePref, speak,
   ttsSupported, unlockAlarmAudio, useVoice, useVoices, voiceSupported } from './voice'
+import { isAndroid, nativeAlarmUrl } from './native'
 
 const TABS = [
   ['hoy', 'Hoy', 'bi-clock'],
@@ -566,6 +567,12 @@ function AlarmForm({ initial, onSave, onDelete, onClose, connected }) {
         <i className="bi bi-info-circle me-1" />Suena mientras tengas la app abierta y la pantalla encendida; no reemplaza al despertador del teléfono.
         {connected && ' También queda como recordatorio en tu Google Calendar, que sí llega con la app cerrada.'}
       </div>
+      {isAndroid() && f.fecha && f.hora && (
+        <a className="btn btn-outline-secondary w-100 mb-2" target="_blank" rel="noopener"
+          href={nativeAlarmUrl(new Date(`${f.fecha}T${f.hora}`), f.motivo.trim() || f.nombre.trim())}>
+          <i className="bi bi-phone me-1" />Crear también en el Reloj del celular
+        </a>
+      )}
       <button className="btn btn-primary w-100 mb-2" disabled={!f.nombre.trim() || !f.fecha || !f.hora || intervaloSeg < 3}
         onClick={() => onSave({ ...f, intervalo_segundos: intervaloSeg })}><i className="bi bi-check2 me-1" />Guardar</button>
       {initial.id && <button className="btn btn-outline-danger w-100" onClick={onDelete}><i className="bi bi-trash3 me-1" />Eliminar alarma</button>}
@@ -776,7 +783,15 @@ function Assistant({ status, refresh, notify }) {
             {m.text}
             {m.acciones?.length > 0 && (
               <div className="acts">{m.acciones.map((a, j) => (
-                <div key={j}><i className={`bi ${a.ok ? 'bi-check-circle' : 'bi-x-circle'} me-1`} />{a.herramienta.replaceAll('_', ' ')}</div>
+                <div key={j}>
+                  <i className={`bi ${a.ok ? 'bi-check-circle' : 'bi-x-circle'} me-1`} />{a.herramienta.replaceAll('_', ' ')}
+                  {a.ok && isAndroid() && ['crear_alarma', 'modificar_alarma'].includes(a.herramienta) && a.resultado?.hora && (
+                    <a className="ms-2" target="_blank" rel="noopener"
+                      href={nativeAlarmUrl(new Date(a.resultado.hora), a.resultado.motivo)}>
+                      <i className="bi bi-phone me-1" />Agregar también al Reloj
+                    </a>
+                  )}
+                </div>
               ))}</div>
             )}
           </div>

@@ -228,8 +228,10 @@ def chat(s: Session, u: User, message: str, history: list[dict] | None = None) -
                 ok = not (isinstance(result, dict) and "error" in result)
             except Exception as e:  # noqa: BLE001 — el error se le devuelve al modelo
                 result, ok = {"error": str(e)}, False
-            acciones.append({"herramienta": fc.name, "argumentos": args, "ok": ok})
-            parts.append(types.Part.from_function_response(
-                name=fc.name, response={"result": json.loads(json.dumps(result, default=str))}))
+            serializable = json.loads(json.dumps(result, default=str))
+            # resultado: para que la app pueda ofrecer atajos (p. ej. crear la alarma también en el Reloj de Android)
+            # sin tener que volver a pedir los datos; ya es lo mismo que se le manda al modelo, no expone nada nuevo.
+            acciones.append({"herramienta": fc.name, "argumentos": args, "ok": ok, "resultado": serializable})
+            parts.append(types.Part.from_function_response(name=fc.name, response={"result": serializable}))
         contents.append(types.Content(role="user", parts=parts))
     return {"respuesta": "La solicitud requirió demasiados pasos; probá dividirla.", "acciones": acciones}

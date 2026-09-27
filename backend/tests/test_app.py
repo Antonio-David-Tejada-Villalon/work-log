@@ -499,6 +499,34 @@ def test_ai_usage_is_counted_per_user(monkeypatch):
     assert theirs["yo"]["solicitudes"] == 2 and "todos" not in theirs and "total" not in theirs
 
 
+def test_assistant_actions_include_the_tool_result(monkeypatch):
+    """El resultado completo de cada acción viaja en la respuesta (lo usa, p. ej., el atajo al Reloj de Android)."""
+    from google import genai
+    from google.genai import types
+    meta = types.GenerateContentResponseUsageMetadata(prompt_token_count=10, candidates_token_count=5, total_token_count=15)
+
+    class FakeModels:
+        def generate_content(self, model, contents, config):
+            if len(contents) == 1:
+                fc = types.FunctionCall(name="crear_alarma", args={"nombre": "Despertar", "cuando": "07:00"})
+                return types.GenerateContentResponse(candidates=[types.Candidate(content=types.Content(
+                    role="model", parts=[types.Part(function_call=fc)]))], usage_metadata=meta)
+            return types.GenerateContentResponse(candidates=[types.Candidate(content=types.Content(
+                role="model", parts=[types.Part(text="Lista.")]))], usage_metadata=meta)
+
+    class FakeClient:
+        def __init__(self, api_key):
+            self.models = FakeModels()
+
+    monkeypatch.setenv("GEMINI_API_KEY", "x")
+    monkeypatch.setattr(genai, "Client", FakeClient)
+    r = client(OWNER).post("/api/assistant", json={"mensaje": "poneme una alarma a las 7"})
+    assert r.status_code == 200
+    accion = r.json()["acciones"][0]
+    assert accion["herramienta"] == "crear_alarma" and accion["ok"] is True
+    assert accion["resultado"]["nombre"] == "Despertar" and accion["resultado"]["hora"].endswith("07:00:00-03:00")
+
+
 def test_quota_errors_become_clear_messages(monkeypatch):
     from google.genai import errors
     boss = client(OWNER)
