@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, downloadExcel, fmtDate, getPin, hhmm, hms, setPin, todayISO } from './api'
+import { api, downloadExcel, fmtDate, hhmm, hms, setPin, todayISO } from './api'
 import { getThemePref, setThemePref } from './theme'
 import { getRatePref, getVoicePref, isNatural, setRatePref, setVoicePref, speak, ttsSupported, useVoice, useVoices, voiceSupported } from './voice'
 
@@ -147,20 +147,76 @@ export default function App() {
   )
 }
 
+const PIN_MIN = 4
+
+// Primera vez: el PIN se crea acá (se guarda con hash en el servidor). Después solo se ingresa.
 function PinScreen({ onDone }) {
-  const [p, setP] = useState(getPin())
+  const [mode, setMode] = useState(null) // null = consultando | 'setup' = primera vez | 'enter' = ya existe
+  const [p, setP] = useState('')
+  const [p2, setP2] = useState('')
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    api('/pin/status').then((r) => setMode(r.configurado ? 'enter' : 'setup')).catch((e) => setErr(e.message))
+  }, [])
+
+  const submit = async (e) => {
+    e.preventDefault()
+    const pin = p.trim()
+    setErr('')
+    if (mode === 'setup') {
+      if (pin.length < PIN_MIN) return setErr(`El PIN debe tener al menos ${PIN_MIN} caracteres.`)
+      if (pin !== p2.trim()) return setErr('Los dos PIN no coinciden.')
+    }
+    setBusy(true)
+    try {
+      if (mode === 'setup') await api('/pin/setup', { method: 'POST', body: { pin } })
+      setPin(pin)
+      await api('/status') // verifica el PIN para poder avisar si es incorrecto
+      onDone()
+    } catch (e2) {
+      setErr(e2.status === 401 ? 'PIN incorrecto.' : e2.message)
+    } finally { setBusy(false) }
+  }
+
+  const setup = mode === 'setup'
   return (
     <main className="container app-container px-3 d-flex align-items-center" style={{ minHeight: '85dvh' }}>
       <div className="card w-100">
         <div className="card-body p-4 text-center">
           <img src="/icon-192.png" alt="" width="64" height="64" className="rounded-3 mb-3" />
           <h1 className="h4 mb-1">Control Horario</h1>
-          <p className="text-body-secondary small mb-4">Ingresá tu PIN para continuar</p>
-          <form onSubmit={(e) => { e.preventDefault(); setPin(p); onDone() }}>
-            <input className="form-control form-control-lg text-center mb-3" type="password" inputMode="numeric"
-              aria-label="PIN" value={p} onChange={(e) => setP(e.target.value)} autoFocus />
-            <button className="btn btn-primary btn-lg w-100" type="submit">Entrar</button>
-          </form>
+          {mode === null && !err && <div className="spinner-border text-primary my-4" role="status"><span className="visually-hidden">Cargando…</span></div>}
+          {mode && (
+            <>
+              <p className="text-body-secondary small mb-4">
+                {setup ? 'Elegí un PIN para proteger tu app. Lo vas a necesitar al abrirla en cada dispositivo nuevo.' : 'Ingresá tu PIN para continuar'}
+              </p>
+              <form onSubmit={submit}>
+                <input className="form-control form-control-lg text-center mb-3" type="password" aria-label={setup ? 'PIN nuevo' : 'PIN'}
+                  placeholder={setup ? 'Elegí tu PIN' : ''} autoComplete={setup ? 'new-password' : 'current-password'}
+                  value={p} onChange={(e) => setP(e.target.value)} autoFocus />
+                {setup && (
+                  <input className="form-control form-control-lg text-center mb-3" type="password" aria-label="Repetir PIN"
+                    placeholder="Repetí el PIN" autoComplete="new-password" value={p2} onChange={(e) => setP2(e.target.value)} />
+                )}
+                {setup && <p className="form-text mt-0 mb-3">Mínimo {PIN_MIN} caracteres. Podés usar números y letras.</p>}
+                <button className="btn btn-primary btn-lg w-100" type="submit" disabled={busy || !p}>{setup ? 'Crear PIN y entrar' : 'Entrar'}</button>
+              </form>
+            </>
+          )}
+          {err && <div className="alert alert-danger small mt-3 mb-0 py-2" role="alert">{err}</div>}
+          {mode === 'enter' && (
+            <details className="text-start small text-body-secondary mt-4">
+              <summary>¿Olvidaste tu PIN?</summary>
+              <p className="mt-2 mb-1">Se restablece desde tu servidor, con tu cuenta de Supabase o Vercel:</p>
+              <ul className="ps-3 mb-0">
+                <li>En Supabase → <b>SQL Editor</b>, ejecutá <code>delete from apppin;</code> y al volver a abrir la app te pedirá crear uno nuevo.</li>
+                <li>O en Vercel agregá la variable <code>APP_PIN</code> con un PIN temporal, volvé a desplegar, entrá con él y cambialo en Ajustes.</li>
+              </ul>
+            </details>
+          )}
         </div>
       </div>
     </main>
@@ -635,7 +691,6 @@ function VoiceSettings() {
 
 function SettingsView({ status, refresh, notify }) {
   const [c, setC] = useState(status.ajustes)
-  const [pin, setP] = useState(getPin())
   const [d, setD] = useState(monthStart())
   const [h, setH] = useState(todayISO())
   const [theme, setTheme] = useState(getThemePref())
@@ -715,13 +770,44 @@ function SettingsView({ status, refresh, notify }) {
         </div>
       </div>
 
-      <div className="card">
-        <div className="card-body">
-          <h2 className="h6 card-title mb-3"><i className="bi bi-shield-lock me-2" />PIN de acceso</h2>
-          <input className="form-control mb-2" type="password" aria-label="PIN" value={pin} onChange={(e) => setP(e.target.value)} />
-          <button className="btn btn-outline-primary w-100" onClick={() => { setPin(pin); refresh(); notify('PIN actualizado') }}>Guardar PIN</button>
-        </div>
-      </div>
+      <PinSettings notify={notify} />
     </>
+  )
+}
+
+function PinSettings({ notify }) {
+  const [cur, setCur] = useState('')
+  const [nue, setNue] = useState('')
+  const [rep, setRep] = useState('')
+  const [busy, setBusy] = useState(false)
+  const change = async (e) => {
+    e.preventDefault()
+    const n = nue.trim()
+    if (n.length < PIN_MIN) return notify(`El PIN nuevo debe tener al menos ${PIN_MIN} caracteres`)
+    if (n !== rep.trim()) return notify('Los dos PIN nuevos no coinciden')
+    setBusy(true)
+    try {
+      await api('/pin/change', { method: 'POST', body: { actual: cur.trim(), nuevo: n } })
+      setPin(n)
+      setCur(''); setNue(''); setRep('')
+      notify('PIN actualizado')
+    } catch (err) { notify(err.message) } finally { setBusy(false) }
+  }
+  return (
+    <div className="card">
+      <div className="card-body">
+        <h2 className="h6 card-title mb-3"><i className="bi bi-shield-lock me-2" />Cambiar PIN de acceso</h2>
+        <form onSubmit={change}>
+          <input className="form-control mb-2" type="password" aria-label="PIN actual" placeholder="PIN actual"
+            autoComplete="current-password" value={cur} onChange={(e) => setCur(e.target.value)} />
+          <input className="form-control mb-2" type="password" aria-label="PIN nuevo" placeholder="PIN nuevo"
+            autoComplete="new-password" value={nue} onChange={(e) => setNue(e.target.value)} />
+          <input className="form-control mb-3" type="password" aria-label="Repetir PIN nuevo" placeholder="Repetir PIN nuevo"
+            autoComplete="new-password" value={rep} onChange={(e) => setRep(e.target.value)} />
+          <button className="btn btn-outline-primary w-100" type="submit" disabled={busy || !cur || !nue || !rep}>Cambiar PIN</button>
+        </form>
+        <p className="form-text mb-0">Los otros dispositivos te lo van a pedir la próxima vez que abras la app.</p>
+      </div>
+    </div>
   )
 }

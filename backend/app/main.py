@@ -10,12 +10,11 @@ from fastapi.responses import RedirectResponse, Response
 from pydantic import BaseModel
 from sqlmodel import Session
 
-from . import assistant, calc
+from . import assistant, calc, security
 from . import google_integration as gi
 from .db import get_session, get_settings, init_db
 from .excel import build_xlsx
 
-APP_PIN = os.getenv("APP_PIN", "")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "")
 
 @asynccontextmanager
@@ -27,9 +26,19 @@ async def lifespan(_app):
 app = FastAPI(title="Control Horario", version="1.0.0", lifespan=lifespan)
 
 
-def auth(x_app_pin: Optional[str] = Header(default=None), pin: Optional[str] = Query(default=None)) -> None:
-    if APP_PIN and (x_app_pin or pin) != APP_PIN:
-        raise HTTPException(401, "PIN incorrecto")
+def ensure_pin(result: str, wrong: str = "PIN incorrecto") -> None:
+    """Traduce el resultado de security.check a la respuesta HTTP correspondiente."""
+    if result == "locked":
+        raise HTTPException(429, "Demasiados intentos. Esperá un minuto e intentá de nuevo.")
+    if result == "setup":
+        raise HTTPException(401, "Creá tu PIN para empezar")
+    if result != "ok":
+        raise HTTPException(401, wrong)
+
+
+def auth(x_app_pin: Optional[str] = Header(default=None), pin: Optional[str] = Query(default=None),
+         s: Session = Depends(get_session)) -> None:
+    ensure_pin(security.check(s, x_app_pin or pin))
 
 
 def guard(fn):
@@ -87,6 +96,15 @@ class ChatIn(BaseModel):
     historial: list[dict] = []
 
 
+class PinSetup(BaseModel):
+    pin: str
+
+
+class PinChange(BaseModel):
+    actual: str
+    nuevo: str
+
+
 R = Depends(auth)
 
 
@@ -111,6 +129,28 @@ def status(s: Session = Depends(get_session)):
         "google": {"configurado": gi.configured(), "conectado": gi.connected(s)},
         "ia": bool(os.getenv("GEMINI_API_KEY")),
     }
+
+
+# ---------------------------------------------------------------- PIN de acceso
+@app.get("/api/pin/status")
+def pin_status(s: Session = Depends(get_session)):
+    return {"configurado": security.is_configured(s)}
+
+
+@app.post("/api/pin/setup")
+def pin_setup(body: PinSetup, s: Session = Depends(get_session)):
+    """Crea el PIN la primera vez. Solo funciona mientras no haya ninguno."""
+    if security.is_configured(s):
+        raise HTTPException(409, "Ya hay un PIN configurado.")
+    guard(lambda: security.set_pin(s, body.pin))
+    return {"ok": True}
+
+
+@app.post("/api/pin/change")
+def pin_change(body: PinChange, s: Session = Depends(get_session)):
+    ensure_pin(security.check(s, body.actual), "El PIN actual no es correcto")
+    guard(lambda: security.set_pin(s, body.nuevo))
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------- jornadas

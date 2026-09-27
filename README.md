@@ -16,10 +16,13 @@ App web instalable en el teléfono (PWA) para registrar tu jornada laboral, calc
 | **Historial** | Jornadas por día (fecha, entrada, salida, duración). Agregar, editar o eliminar. Varios tramos en un mismo día se suman. Turnos que cruzan medianoche se calculan bien. Tocando el indicador de extras de un día se corrigen a mano (o se vuelve al cálculo automático). |
 | **Banco** | Saldo en `hh:mm:ss` y desglosado en **meses, días, horas, minutos y segundos**, de dos formas: en *jornadas laborales* (día = tu jornada configurada; mes = N jornadas) y en *tiempo reloj* (día = 24 h; mes = 30 días). Registrar uso (días/horas/minutos) o ajustes a favor o en contra; editar o eliminar movimientos. |
 | **Asistente** | Hablás o escribís: "entré a las 8", "ayer salí 17:10", "¿cuántas extras tengo?", "usá 1 día del banco el viernes", "recordame mañana 10:00 llamar al proveedor", "agregá la tarea enviar informe para el lunes". Responde en voz alta. Pide confirmación antes de eliminar. |
-| **Ajustes** | Horas por jornada (define desde cuándo hay horas extra), jornadas por mes, descontar faltantes del banco (opcional), zona horaria, conexión con Google, exportar Excel, voz del asistente (elegir voz y velocidad, con botón para probarla), tema claro/oscuro/automático, PIN. |
+| **Ajustes** | Horas por jornada (define desde cuándo hay horas extra), jornadas por mes, descontar faltantes del banco (opcional), zona horaria, conexión con Google, exportar Excel, voz del asistente (elegir voz y velocidad, con botón para probarla), tema claro/oscuro/automático, cambiar el PIN de acceso. |
 | **Excel** | Hojas *Jornadas*, *Resumen diario* y *Banco de horas*, con duraciones en formato `[h]:mm:ss` y totales con fórmulas `SUM`. |
 
 **Regla de cálculo:** extra del día = máx(0, total trabajado en el día − horas de jornada). Saldo del banco = extras (o correcciones manuales) − horas usadas ± ajustes (− faltantes, si activás esa opción). El día de una jornada es la fecha local de su hora de entrada.
+
+**Acceso con PIN:** la primera vez que abrís la app te pide crear un PIN (mínimo 4 caracteres, letras y números). Se guarda en la base de datos con hash y sal, nunca en texto plano, y hasta que lo creás la API no responde datos. Podés cambiarlo en *Ajustes → Cambiar PIN de acceso*. Tras 5 intentos fallidos seguidos la app se bloquea 1 minuto.
+Si lo olvidás, se restablece desde el servidor: en Supabase (*SQL Editor*) ejecutá `delete from apppin;` y la app te pedirá crear uno nuevo (en local: `python -c "import sqlite3; c = sqlite3.connect('data/horas.db'); c.execute('delete from apppin'); c.commit()"`). También podés definir la variable `APP_PIN` con un PIN temporal: funciona como PIN de respaldo, entrás con él y lo cambiás en Ajustes (después quitá la variable).
 
 ---
 
@@ -76,8 +79,8 @@ Pruebas: `pip install pytest` y luego `pytest -q` (desde la raíz).
 **App + API (Vercel, plan Hobby, gratis para uso personal):**
 1. Subí esta carpeta a un repositorio de GitHub (el `.gitignore` ya excluye `.env`, `node_modules` y `dist`).
 2. En <https://vercel.com> → *Add New → Project* → importá el repo. Vercel detecta FastAPI en `index.py`; `vercel.json` compila el frontend (`npm ci && npm run build`) y le da hasta 60 s al asistente.
-3. *Settings → Environment Variables*: `APP_PIN`, `DATABASE_URL`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `TIMEZONE`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI=https://TU-PROYECTO.vercel.app/api/google/callback` y `FRONTEND_URL=https://TU-PROYECTO.vercel.app`.
-4. *Deploy*. Cada `git push` vuelve a publicar.
+3. *Settings → Environment Variables*: `DATABASE_URL`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `TIMEZONE`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI=https://TU-PROYECTO.vercel.app/api/google/callback` y `FRONTEND_URL=https://TU-PROYECTO.vercel.app`.
+4. *Deploy*. Cada `git push` vuelve a publicar. **Abrí la URL enseguida y creá tu PIN**: mientras no exista, el primero que entre a la URL lo define.
 
 **Instalar en el teléfono:** abrí la URL en Chrome (Android) → menú ⋮ → *Instalar app / Agregar a la pantalla principal*. En iPhone: Safari → Compartir → *Agregar a inicio* (si el reconocimiento de voz no está disponible en tu versión de iOS, podés escribir o usar el dictado del teclado).
 
@@ -98,7 +101,8 @@ La app funciona sin imágenes. Si generás las tuyas, guardalas con estos nombre
 
 ```
 backend/
-  app/db.py                 modelos y conexión (Settings, Shift, DayOverride, BankMovement, GoogleToken)
+  app/db.py                 modelos y conexión (Settings, Shift, DayOverride, BankMovement, AppPin, GoogleToken)
+  app/security.py           PIN de acceso: creación, cambio, verificación con hash y bloqueo por intentos
   app/calc.py               cálculos: jornadas, extras, banco, desgloses
   app/excel.py              exportación .xlsx
   app/assistant.py          asistente Gemini con function calling (15 herramientas)
@@ -117,4 +121,5 @@ index.py (entrada Vercel) · vercel.json · pyproject.toml · requirements.txt
 ## API (resumen)
 
 `GET /api/status` · `POST /api/clock-in` · `POST /api/clock-out` · `GET|POST /api/shifts` · `PUT|DELETE /api/shifts/{id}` · `GET /api/summary?desde&hasta` · `PUT /api/days/{fecha}/extra` · `GET|POST /api/bank` · `PUT|DELETE /api/bank/{id}` · `GET|PUT /api/settings` · `GET /api/export.xlsx?desde&hasta` · `POST /api/assistant` · `GET /api/google/auth-url` · `POST /api/google/disconnect`.
-Todas (menos health y callback de Google) requieren el encabezado `X-App-Pin` si definiste `APP_PIN`. Documentación interactiva en `/docs`.
+`GET /api/pin/status` · `POST /api/pin/setup` (solo si todavía no hay PIN) · `POST /api/pin/change`.
+Todas (menos health, callback de Google y los tres de `/api/pin/*`) requieren el encabezado `X-App-Pin`. Documentación interactiva en `/docs`.

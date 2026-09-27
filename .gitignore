@@ -1,6 +1,7 @@
 node_modules/
 backend/data/
 data/
+password-supabase
 .env
 backend/.env
 __pycache__/

@@ -93,6 +93,15 @@ class BankMovement(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow, sa_type=DateTime)
 
 
+class AppPin(SQLModel, table=True):
+    """PIN de acceso creado desde la app (hash con sal) y contador de intentos fallidos."""
+    id: int = Field(default=1, primary_key=True)
+    salt: str = ""
+    digest: str = ""                    # vacío = todavía no se creó el PIN
+    fails: int = 0
+    locked_until: Optional[datetime] = Field(default=None, sa_type=DateTime)  # UTC sin tzinfo
+
+
 class GoogleToken(SQLModel, table=True):
     id: int = Field(default=1, primary_key=True)
     credentials_json: str = ""
@@ -123,5 +132,5 @@ def get_settings(s: Session) -> Settings:
     return st
 
 
-__all__ = ["Settings", "Shift", "DayOverride", "BankMovement", "GoogleToken", "engine",
+__all__ = ["Settings", "Shift", "DayOverride", "BankMovement", "AppPin", "GoogleToken", "engine",
            "init_db", "get_session", "get_settings", "utcnow", "select", "Session"]

@@ -9,7 +9,7 @@ from openpyxl import load_workbook  # noqa: E402
 from io import BytesIO  # noqa: E402
 
 from backend.app.main import app  # noqa: E402
-from backend.app import calc  # noqa: E402
+from backend.app import calc, security  # noqa: E402
 
 H = {"X-App-Pin": "9999"}
 
@@ -63,6 +63,71 @@ def test_flow():
         # ajustes
         assert c.put("/api/settings", json={"daily_hours": 7}, headers=H).json()["daily_hours"] == 7
         assert c.put("/api/settings", json={"timezone": "Nope/X"}, headers=H).status_code == 400
+
+
+def test_pin_created_in_app(monkeypatch):
+    """Caso normal: sin APP_PIN el PIN se crea desde la app, se puede cambiar y frena la fuerza bruta."""
+    from datetime import timedelta
+    from sqlmodel import Session
+    from backend.app.db import AppPin, engine, init_db, utcnow
+
+    monkeypatch.delenv("APP_PIN")
+    with TestClient(app) as c:
+        init_db()
+
+        def wipe():
+            with Session(engine) as s:
+                if row := s.get(AppPin, 1):
+                    s.delete(row)
+                    s.commit()
+
+        def get(pin):
+            return c.get("/api/status", headers={"X-App-Pin": pin}).status_code
+
+        wipe()
+        assert c.get("/api/pin/status").json() == {"configurado": False}
+        assert c.get("/api/status").status_code == 401                            # sin PIN no se abre la app
+        assert c.post("/api/pin/setup", json={"pin": "12"}).status_code == 400    # muy corto
+        assert c.post("/api/pin/setup", json={"pin": "clave-ñ"}).status_code == 400  # no ASCII
+        assert c.post("/api/pin/setup", json={"pin": "4321"}).status_code == 200
+        assert c.post("/api/pin/setup", json={"pin": "9999"}).status_code == 409  # ya existe
+        assert c.get("/api/pin/status").json() == {"configurado": True}
+        assert get("4321") == 200 and get("0000") == 401
+        # se guarda con hash, nunca en claro
+        with Session(engine) as s:
+            row = s.get(AppPin, 1)
+            assert row.digest and "4321" not in (row.digest + row.salt)
+        # cambiar el PIN
+        assert c.post("/api/pin/change", json={"actual": "0000", "nuevo": "5555"}).status_code == 401
+        assert c.post("/api/pin/change", json={"actual": "4321", "nuevo": "5555"}).status_code == 200
+        assert get("4321") == 401 and get("5555") == 200
+        # bloqueo tras varios intentos fallidos seguidos, aunque el PIN correcto llegue después
+        for _ in range(security.MAX_FAILS):
+            get("mal1")
+        assert get("5555") == 429
+        with Session(engine) as s:  # vence el bloqueo
+            row = s.get(AppPin, 1)
+            row.locked_until = utcnow() - timedelta(seconds=1)
+            s.add(row)
+            s.commit()
+        assert get("5555") == 200
+        wipe()
+
+
+def test_env_pin_is_backup(monkeypatch):
+    """APP_PIN (opcional) funciona como PIN de respaldo aunque exista uno creado en la app."""
+    monkeypatch.setenv("APP_PIN", "9999")
+    with TestClient(app) as c:
+        assert c.get("/api/pin/status").json() == {"configurado": True}
+        assert c.post("/api/pin/setup", json={"pin": "1111"}).status_code == 409
+        assert c.post("/api/pin/change", json={"actual": "9999", "nuevo": "7777"}).status_code == 200
+        assert c.get("/api/status", headers={"X-App-Pin": "7777"}).status_code == 200
+        assert c.get("/api/status", headers={"X-App-Pin": "9999"}).status_code == 200  # respaldo
+        from sqlmodel import Session
+        from backend.app.db import AppPin, engine
+        with Session(engine) as s:
+            s.delete(s.get(AppPin, 1))
+            s.commit()
 
 
 def test_breakdown():
