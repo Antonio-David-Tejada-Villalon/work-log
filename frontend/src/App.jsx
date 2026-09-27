@@ -1,12 +1,14 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, apiUrl, downloadExcel, fmtDate, hhmm, hms, todayISO } from './api'
 import { getThemePref, setThemePref } from './theme'
-import { getRatePref, getVoicePref, isNatural, setRatePref, setVoicePref, speak, ttsSupported, useVoice, useVoices, voiceSupported } from './voice'
+import { ALARM_SOUNDS, getRatePref, getVoicePref, isNatural, playAlarmTone, setRatePref, setVoicePref, speak,
+  ttsSupported, unlockAlarmAudio, useVoice, useVoices, voiceSupported } from './voice'
 
 const TABS = [
   ['hoy', 'Hoy', 'bi-clock'],
   ['hist', 'Historial', 'bi-calendar3'],
   ['banco', 'Banco', 'bi-piggy-bank'],
+  ['alarmas', 'Alarmas', 'bi-alarm'],
   ['ia', 'Asistente', 'bi-mic'],
   ['cfg', 'Ajustes', 'bi-gear'],
 ]
@@ -70,6 +72,8 @@ export default function App() {
   const [needLogin, setNeedLogin] = useState(false)
   const [loginMsg] = useState(() => new URLSearchParams(location.search).get('login') || '')
   const [rev, setRev] = useState(0)
+  const [alarmsRev, setAlarmsRev] = useState(0)
+  const bumpAlarms = useCallback(() => setAlarmsRev((r) => r + 1), [])
 
   const notify = useCallback((m) => { setToast(m); setTimeout(() => setToast(''), 3500) }, [])
   const refresh = useCallback(async () => {
@@ -92,9 +96,16 @@ export default function App() {
     }
   }, [refresh, notify, loginMsg])
 
+  // El audio de las alarmas necesita haberse "desbloqueado" con una interacción; el primer toque alcanza.
+  useEffect(() => {
+    const unlock = () => { unlockAlarmAudio(); window.removeEventListener('pointerdown', unlock) }
+    window.addEventListener('pointerdown', unlock)
+    return () => window.removeEventListener('pointerdown', unlock)
+  }, [])
+
   if (needLogin) return <LoginScreen msg={loginMsg} />
 
-  const props = { status, refresh, notify, rev, fetchedAt, setTab }
+  const props = { status, refresh, notify, rev, fetchedAt, setTab, bumpAlarms }
   const current = TABS.find((t) => t[0] === tab)
   return (
     <>
@@ -116,6 +127,7 @@ export default function App() {
             {tab === 'hoy' && <Today {...props} />}
             {tab === 'hist' && <History {...props} />}
             {tab === 'banco' && <Bank {...props} />}
+            {tab === 'alarmas' && <Alarms {...props} />}
             {tab === 'ia' && <Assistant {...props} />}
             {tab === 'cfg' && <SettingsView {...props} />}
           </>
@@ -142,6 +154,7 @@ export default function App() {
           </div>
         </div>
       )}
+      <AlarmRinger alarmsRev={alarmsRev} />
     </>
   )
 }
@@ -513,6 +526,191 @@ function Bank({ status, refresh, notify, rev }) {
         </Modal>
       )}
     </>
+  )
+}
+
+// ---------------------------------------------------------------- Alarmas
+const SOUND_LABEL = { clasica: 'Clásica', suave: 'Suave', urgente: 'Urgente' }
+
+function AlarmForm({ initial, onSave, onDelete, onClose, connected }) {
+  const [f, setF] = useState(initial)
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value })
+  const intervaloSeg = (Number(f.minutos) || 0) * 60 + (Number(f.segundos) || 0)
+  return (
+    <Modal title={initial.id ? 'Editar alarma' : 'Nueva alarma'} onClose={onClose}>
+      <div className="mb-3"><label className="form-label">Nombre</label>
+        <input className="form-control" value={f.nombre} onChange={set('nombre')} placeholder="Ej.: Despertar" autoFocus /></div>
+      <div className="row g-2 mb-3">
+        <div className="col"><label className="form-label">Fecha</label><input className="form-control" type="date" value={f.fecha} onChange={set('fecha')} /></div>
+        <div className="col"><label className="form-label">Hora</label><input className="form-control" type="time" value={f.hora} onChange={set('hora')} /></div>
+      </div>
+      <div className="mb-3"><label className="form-label">Motivo</label>
+        <input className="form-control" value={f.motivo} onChange={set('motivo')} placeholder="Lo dice en voz alta al sonar; vacío = el nombre" /></div>
+      <div className="mb-3">
+        <label className="form-label">Sonido</label>
+        <div className="input-group">
+          <select className="form-select" value={f.sonido} onChange={set('sonido')}>
+            {ALARM_SOUNDS.map((snd) => <option key={snd} value={snd}>{SOUND_LABEL[snd]}</option>)}
+          </select>
+          <button type="button" className="btn btn-outline-secondary" onClick={() => playAlarmTone(f.sonido)}><i className="bi bi-play-fill me-1" />Probar</button>
+        </div>
+      </div>
+      <div className="mb-2"><label className="form-label">Repeticiones</label>
+        <input className="form-control" type="number" min="1" max="30" value={f.veces} onChange={set('veces')} /></div>
+      <p className="form-text mt-0 mb-1">Cada cuánto repetir</p>
+      <div className="row g-2 mb-3">
+        <div className="col"><label className="form-label small">Minutos</label><input className="form-control" type="number" min="0" value={f.minutos} onChange={set('minutos')} /></div>
+        <div className="col"><label className="form-label small">Segundos</label><input className="form-control" type="number" min="0" max="59" value={f.segundos} onChange={set('segundos')} /></div>
+      </div>
+      <div className="alert alert-secondary small py-2 mb-3">
+        <i className="bi bi-info-circle me-1" />Suena mientras tengas la app abierta y la pantalla encendida; no reemplaza al despertador del teléfono.
+        {connected && ' También queda como recordatorio en tu Google Calendar, que sí llega con la app cerrada.'}
+      </div>
+      <button className="btn btn-primary w-100 mb-2" disabled={!f.nombre.trim() || !f.fecha || !f.hora || intervaloSeg < 3}
+        onClick={() => onSave({ ...f, intervalo_segundos: intervaloSeg })}><i className="bi bi-check2 me-1" />Guardar</button>
+      {initial.id && <button className="btn btn-outline-danger w-100" onClick={onDelete}><i className="bi bi-trash3 me-1" />Eliminar alarma</button>}
+    </Modal>
+  )
+}
+
+function Alarms({ status, notify, rev, bumpAlarms }) {
+  const [list, setList] = useState(null)
+  const [edit, setEdit] = useState(null)
+  const load = useCallback(() => { api('/alarms').then(setList).catch((e) => notify(e.message)) }, [notify])
+  useEffect(() => { load() }, [load, rev])
+
+  const save = async (f) => {
+    try {
+      const body = { nombre: f.nombre.trim(), cuando: `${f.fecha}T${f.hora}`, motivo: f.motivo.trim(), sonido: f.sonido,
+        veces: Number(f.veces) || 1, intervalo_segundos: f.intervalo_segundos }
+      if (f.id) await api(`/alarms/${f.id}`, { method: 'PUT', body })
+      else await api('/alarms', { method: 'POST', body })
+      setEdit(null); notify('Alarma guardada'); load(); bumpAlarms()
+    } catch (e) { notify(e.message) }
+  }
+  const del = async () => {
+    if (!window.confirm(`¿Eliminar la alarma "${edit.nombre}"?`)) return
+    try { await api(`/alarms/${edit.id}`, { method: 'DELETE' }); setEdit(null); notify('Alarma eliminada'); load(); bumpAlarms() } catch (e) { notify(e.message) }
+  }
+  const openNew = () => setEdit({ nombre: '', fecha: todayISO(), hora: '', motivo: '', sonido: 'clasica', veces: 5, minutos: 0, segundos: 15 })
+  const openEdit = (a) => setEdit({ id: a.id, nombre: a.nombre, fecha: a.hora.slice(0, 10), hora: a.hora.slice(11, 16),
+    motivo: a.motivo === a.nombre ? '' : a.motivo, sonido: a.sonido, veces: a.veces,
+    minutos: Math.floor(a.intervalo_segundos / 60), segundos: a.intervalo_segundos % 60 })
+  const fmt = (iso) => new Date(iso).toLocaleString('es-AR', { weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+
+  if (list === null) return <div className="text-center py-5"><div className="spinner-border text-primary" role="status"><span className="visually-hidden">Cargando…</span></div></div>
+  const proximas = list.filter((a) => !a.confirmada)
+  const confirmadas = list.filter((a) => a.confirmada)
+
+  return (
+    <>
+      <button className="btn btn-primary w-100 mb-3" onClick={openNew}><i className="bi bi-plus-lg me-1" />Nueva alarma</button>
+      {list.length === 0 && (
+        <p className="text-center text-body-secondary py-4">No tenés alarmas. Suenan mientras la app esté abierta y la pantalla encendida.</p>
+      )}
+      {proximas.length > 0 && (
+        <div className="list-group mb-3">
+          {proximas.map((a) => (
+            <button key={a.id} className="list-group-item list-group-item-action d-flex justify-content-between align-items-center" onClick={() => openEdit(a)}>
+              <span>
+                <b>{a.nombre}</b>{a.pasada && <span className="badge text-bg-warning ms-2">sonando</span>}
+                <div className="small text-body-secondary text-capitalize">{fmt(a.hora)} · {a.veces} veces{a.en_calendar && <> · <i className="bi bi-google" /></>}</div>
+              </span>
+              <i className="bi bi-chevron-right text-body-secondary" />
+            </button>
+          ))}
+        </div>
+      )}
+      {confirmadas.length > 0 && (
+        <>
+          <p className="small text-body-secondary mb-1">Confirmadas</p>
+          <div className="list-group mb-3">
+            {confirmadas.map((a) => (
+              <button key={a.id} className="list-group-item list-group-item-action d-flex justify-content-between align-items-center text-body-secondary" onClick={() => openEdit(a)}>
+                <span><b>{a.nombre}</b><div className="small text-capitalize">{fmt(a.hora)}</div></span>
+                <i className="bi bi-check2-circle text-success" />
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+      {edit && <AlarmForm initial={edit} onSave={save} onDelete={del} onClose={() => setEdit(null)} connected={status.google.conectado} />}
+    </>
+  )
+}
+
+const newChallenge = () => ({ a: 2 + Math.floor(Math.random() * 8), b: 2 + Math.floor(Math.random() * 8) })
+
+// Vive siempre montado (no depende de la pestaña activa) para poder sonar sin importar dónde esté la persona.
+function AlarmRinger({ alarmsRev }) {
+  const [list, setList] = useState([])
+  const [ringing, setRinging] = useState(null)
+  const [challenge, setChallenge] = useState(newChallenge)
+  const [answer, setAnswer] = useState('')
+  const [wrong, setWrong] = useState(false)
+  const timers = useRef([])
+
+  const load = useCallback(() => { api('/alarms').then(setList).catch(() => { /* sin sesión u offline: se reintenta solo */ }) }, [])
+  useEffect(() => {
+    load()
+    const onVis = () => { if (!document.hidden) load() }
+    document.addEventListener('visibilitychange', onVis)
+    const iv = setInterval(() => { if (!document.hidden) load() }, 20000)
+    return () => { document.removeEventListener('visibilitychange', onVis); clearInterval(iv) }
+  }, [load, alarmsRev])
+
+  const startRinging = useCallback((alarm) => {
+    timers.current.forEach(clearTimeout)
+    timers.current = []
+    setRinging(alarm); setChallenge(newChallenge()); setAnswer(''); setWrong(false)
+    for (let i = 0; i < alarm.veces; i++) {
+      timers.current.push(setTimeout(() => {
+        playAlarmTone(alarm.sonido)
+        if (i === 0) speak(`Alarma. ${alarm.motivo}`)
+      }, i * alarm.intervalo_segundos * 1000))
+    }
+  }, [])
+
+  useEffect(() => {
+    const pendientes = list.filter((a) => !a.confirmada)
+    const vencida = pendientes.find((a) => a.pasada)
+    if (vencida) { if (!ringing || ringing.id !== vencida.id) startRinging(vencida); return }
+    if (ringing) return
+    const proxima = pendientes.filter((a) => !a.pasada).sort((a, b) => new Date(a.hora) - new Date(b.hora))[0]
+    if (!proxima) return
+    const t = setTimeout(() => startRinging(proxima), Math.max(0, new Date(proxima.hora).getTime() - Date.now()))
+    return () => clearTimeout(t)
+  }, [list, ringing, startRinging])
+
+  useEffect(() => () => timers.current.forEach(clearTimeout), [])  // limpieza al desmontar (p. ej. al cerrar sesión)
+
+  if (!ringing) return null
+  const confirm = async () => {
+    if (Number(answer) !== challenge.a + challenge.b) { setWrong(true); setChallenge(newChallenge()); setAnswer(''); return }
+    timers.current.forEach(clearTimeout); timers.current = []
+    const id = ringing.id
+    setRinging(null)
+    // se marca localmente ya mismo: si se esperara solo a load(), la lista todavía vieja (con esta alarma pendiente
+    // y vencida) haría que el efecto de arriba la vuelva a hacer sonar antes de que la recarga llegue.
+    setList((prev) => prev.map((x) => (x.id === id ? { ...x, confirmada: true } : x)))
+    try { await api(`/alarms/${id}/dismiss`, { method: 'POST' }) } catch { /* se reintenta solo en el próximo sondeo */ }
+    load()
+  }
+  return (
+    <div className="position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center p-3" style={{ zIndex: 2000, background: 'rgba(0,0,0,.75)' }}>
+      <div className="card" style={{ maxWidth: 380, width: '100%' }}>
+        <div className="card-body text-center p-4">
+          <i className="bi bi-alarm-fill text-warning" style={{ fontSize: '2.5rem' }} />
+          <h2 className="h5 mt-2 mb-1">{ringing.nombre}</h2>
+          <p className="text-body-secondary">{ringing.motivo}</p>
+          <label className="form-label small" htmlFor="desafio-alarma">Para apagarla, ¿cuánto es {challenge.a} + {challenge.b}?</label>
+          <input id="desafio-alarma" className="form-control text-center mb-2" type="number" inputMode="numeric" autoFocus value={answer}
+            onChange={(e) => { setAnswer(e.target.value); setWrong(false) }} onKeyDown={(e) => e.key === 'Enter' && confirm()} />
+          {wrong && <div className="text-danger small mb-2" role="alert">No es correcto, probá de nuevo.</div>}
+          <button className="btn btn-primary w-100" onClick={confirm}>Ya estoy despierto/a</button>
+        </div>
+      </div>
+    </div>
   )
 }
 

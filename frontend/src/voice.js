@@ -93,3 +93,49 @@ export function speak(text) {
   u.rate = getRatePref()
   synth.speak(u)
 }
+
+// ---- sonidos de alarma: tonos generados con Web Audio (sin archivos que descargar ni licencias).
+export const ALARM_SOUNDS = ['clasica', 'suave', 'urgente']
+let audioCtx = null
+
+function ctx() {
+  const AC = window.AudioContext || window.webkitAudioContext
+  if (!AC) return null
+  if (!audioCtx) audioCtx = new AC()
+  return audioCtx
+}
+
+// Llamar una vez ante cualquier toque del usuario: desbloquea el audio para poder sonar sin otra interacción después.
+export function unlockAlarmAudio() {
+  const ac = ctx()
+  if (ac?.state === 'suspended') ac.resume().catch(() => {})
+}
+
+function tone(freq, duration, type = 'sine', startDelay = 0, gainPeak = 0.32) {
+  const ac = ctx()
+  if (!ac) return
+  const osc = ac.createOscillator()
+  const gain = ac.createGain()
+  osc.type = type
+  osc.frequency.value = freq
+  const t0 = ac.currentTime + startDelay
+  gain.gain.setValueAtTime(0, t0)
+  gain.gain.linearRampToValueAtTime(gainPeak, t0 + 0.02)
+  gain.gain.linearRampToValueAtTime(0, t0 + duration)
+  osc.connect(gain).connect(ac.destination)
+  osc.start(t0)
+  osc.stop(t0 + duration + 0.02)
+}
+
+const PATTERNS = {
+  clasica: () => { tone(880, 0.18); tone(660, 0.18, 'sine', 0.22) },
+  suave: () => { tone(440, 0.7, 'sine', 0, 0.2) },
+  urgente: () => { tone(1200, 0.09, 'square', 0); tone(1200, 0.09, 'square', 0.13); tone(1200, 0.09, 'square', 0.26) },
+}
+
+// Suena una vez (un "ring") con el patrón elegido. playAlarm en App.jsx llama a esto repeat_count veces.
+export function playAlarmTone(sound) {
+  const ac = ctx()
+  if (ac?.state === 'suspended') ac.resume().catch(() => {})
+  ;(PATTERNS[sound] || PATTERNS.clasica)()
+}

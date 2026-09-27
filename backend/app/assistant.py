@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 from sqlmodel import Session
 
-from . import calc, usage
+from . import alarms, calc, usage
 from . import google_integration as gi
 from .db import User, get_settings
 
@@ -76,6 +76,22 @@ TOOLS = [
     _fn("listar_eventos_calendar", "Lista próximos eventos de Google Calendar.", {"desde": FECHA, "hasta": FECHA}),
     _fn("crear_tarea", "Crea una tarea en Google Tasks (la fecha límite solo guarda el día).",
         {"titulo": S, "fecha": FECHA, "notas": S}, ["titulo"]),
+    _fn("crear_alarma", "Crea una alarma que suena en la app: repite un sonido, y al empezar dice en voz alta el "
+        "motivo. Solo suena con la app abierta y la pantalla encendida (no despierta a nadie con el teléfono "
+        "bloqueado); si el usuario tiene Google conectado, además queda como recordatorio en su Calendar, que sí "
+        "llega aunque la app esté cerrada. Avisale esto al usuario cuando la pida para despertarse.",
+        {"nombre": S, "cuando": HORA, "motivo": {"type": "string", "description": "Lo que se dice en voz alta al sonar; si se omite, se usa el nombre"},
+         "sonido": {"type": "string", "description": "clasica, suave o urgente. Omitir = clasica."},
+         "veces": {"type": "integer", "description": f"Repeticiones ({alarms.MIN_REPEAT}-{alarms.MAX_REPEAT}). Omitir = 5."},
+         "intervalo_segundos": {"type": "integer", "description": f"Segundos entre repeticiones ({alarms.MIN_INTERVAL}-{alarms.MAX_INTERVAL}). Omitir = 15."}},
+        ["nombre", "cuando"]),
+    _fn("listar_alarmas", "Lista las alarmas del usuario, pasadas y futuras.", {}),
+    _fn("modificar_alarma", "Modifica una alarma existente (usar su id; si no lo sabés, primero listar_alarmas).",
+        {"id": {"type": "integer"}, "nombre": S, "cuando": HORA, "motivo": S,
+         "sonido": {"type": "string", "description": "clasica, suave o urgente"},
+         "veces": {"type": "integer"}, "intervalo_segundos": {"type": "integer"}}, ["id"]),
+    _fn("eliminar_alarma", "Elimina una alarma. SOLO con confirmado=true después de que el usuario lo confirme.",
+        {"id": {"type": "integer"}, "confirmado": {"type": "boolean"}}, ["id", "confirmado"]),
 ]
 
 
@@ -134,6 +150,20 @@ def run_tool(s: Session, u: User, name: str, a: dict[str, Any]) -> Any:
         return gi.list_events(s, uid, a.get("desde"), a.get("hasta"))
     if name == "crear_tarea":
         return gi.create_task(s, uid, a["titulo"], a.get("fecha"), a.get("notas", ""))
+    if name == "crear_alarma":
+        return alarms.out(alarms.create_alarm(s, uid, a["nombre"], a["cuando"], a.get("motivo", ""),
+                                              a.get("sonido", "clasica"), a.get("veces", 5),
+                                              a.get("intervalo_segundos", 15)), st)
+    if name == "listar_alarmas":
+        return [alarms.out(x, st) for x in alarms.list_alarms(s, uid)]
+    if name == "modificar_alarma":
+        return alarms.out(alarms.update_alarm(s, uid, int(a["id"]), a.get("nombre"), a.get("cuando"), a.get("motivo"),
+                                              a.get("sonido"), a.get("veces"), a.get("intervalo_segundos")), st)
+    if name == "eliminar_alarma":
+        if not a.get("confirmado"):
+            return {"error": "Falta confirmación del usuario."}
+        alarms.delete_alarm(s, uid, int(a["id"]))
+        return {"ok": True}
     return {"error": f"Herramienta desconocida: {name}"}
 
 

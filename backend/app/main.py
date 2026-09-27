@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 from sqlmodel import Session
 
-from . import assistant, auth, calc, history, usage
+from . import alarms, assistant, auth, calc, history, usage
 from . import google_integration as gi
 from .db import User, get_session, get_settings, init_db
 from .excel import build_xlsx
@@ -97,6 +97,24 @@ class ChatIn(BaseModel):
 
 class BlockIn(BaseModel):
     email: str
+
+
+class AlarmIn(BaseModel):
+    nombre: str
+    cuando: str                     # HH:MM o fecha-hora ISO
+    motivo: str = ""
+    sonido: str = "clasica"
+    veces: int = 5
+    intervalo_segundos: int = 15
+
+
+class AlarmEdit(BaseModel):
+    nombre: Optional[str] = None
+    cuando: Optional[str] = None
+    motivo: Optional[str] = None
+    sonido: Optional[str] = None
+    veces: Optional[int] = None
+    intervalo_segundos: Optional[int] = None
 
 
 # ---------------------------------------------------------------- estado general
@@ -199,6 +217,37 @@ def bank_edit(mov_id: int, body: BankEdit, u: User = Depends(current_user), s: S
 def bank_delete(mov_id: int, u: User = Depends(current_user), s: Session = Depends(get_session)):
     guard(lambda: calc.delete_bank_movement(s, u.id, mov_id))
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- alarmas
+@app.get("/api/alarms")
+def alarm_list(u: User = Depends(current_user), s: Session = Depends(get_session)):
+    st = get_settings(s, u.id)
+    return [alarms.out(a, st) for a in alarms.list_alarms(s, u.id)]
+
+
+@app.post("/api/alarms")
+def alarm_create(body: AlarmIn, u: User = Depends(current_user), s: Session = Depends(get_session)):
+    return guard(lambda: alarms.out(alarms.create_alarm(s, u.id, body.nombre, body.cuando, body.motivo, body.sonido,
+                                                        body.veces, body.intervalo_segundos), get_settings(s, u.id)))
+
+
+@app.put("/api/alarms/{alarm_id}")
+def alarm_edit(alarm_id: int, body: AlarmEdit, u: User = Depends(current_user), s: Session = Depends(get_session)):
+    return guard(lambda: alarms.out(alarms.update_alarm(s, u.id, alarm_id, body.nombre, body.cuando, body.motivo,
+                                                        body.sonido, body.veces, body.intervalo_segundos),
+                                    get_settings(s, u.id)))
+
+
+@app.delete("/api/alarms/{alarm_id}")
+def alarm_delete(alarm_id: int, u: User = Depends(current_user), s: Session = Depends(get_session)):
+    guard(lambda: alarms.delete_alarm(s, u.id, alarm_id))
+    return {"ok": True}
+
+
+@app.post("/api/alarms/{alarm_id}/dismiss")
+def alarm_dismiss(alarm_id: int, u: User = Depends(current_user), s: Session = Depends(get_session)):
+    return guard(lambda: alarms.out(alarms.dismiss_alarm(s, u.id, alarm_id), get_settings(s, u.id)))
 
 
 # ---------------------------------------------------------------- ajustes

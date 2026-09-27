@@ -17,9 +17,12 @@ App web instalable en el teléfono (PWA) para registrar tu jornada laboral, calc
 | **Hoy** | Botón Iniciar/Finalizar jornada con cronómetro en vivo. Opción "Registrar con otra hora". Muestra trabajado hoy, extra hoy y saldo del banco. |
 | **Historial** | Jornadas por día (fecha, entrada, salida, duración). Agregar, editar o eliminar. Varios tramos en un mismo día se suman. Turnos que cruzan medianoche se calculan bien. Tocando el indicador de extras de un día se corrigen a mano (o se vuelve al cálculo automático). |
 | **Banco** | Saldo en `hh:mm:ss` y desglosado en **meses, días, horas, minutos y segundos**, de dos formas: en *jornadas laborales* (día = tu jornada configurada; mes = N jornadas) y en *tiempo reloj* (día = 24 h; mes = 30 días). Registrar uso (días/horas/minutos) o ajustes a favor o en contra; editar o eliminar movimientos. |
-| **Asistente** | Hablás o escribís: "entré a las 8", "ayer salí 17:10", "¿cuántas extras tengo?", "usá 1 día del banco el viernes", "recordame mañana 10:00 llamar al proveedor", "agregá la tarea enviar informe para el lunes". Responde en voz alta. Pide confirmación antes de eliminar. La conversación se guarda en tu cuenta (últimos 100 mensajes), así es la misma en todos tus dispositivos, y se puede borrar con *Borrar conversación*. Si Google agota el límite gratuito, avisa con un mensaje claro y la hora en que se reinicia. |
+| **Asistente** | Hablás o escribís: "entré a las 8", "ayer salí 17:10", "¿cuántas extras tengo?", "usá 1 día del banco el viernes", "recordame mañana 10:00 llamar al proveedor", "agregá la tarea enviar informe para el lunes", "poneme una alarma a las 7 para despertar". Responde en voz alta. Pide confirmación antes de eliminar. La conversación se guarda en tu cuenta (últimos 100 mensajes), así es la misma en todos tus dispositivos, y se puede borrar con *Borrar conversación*. Si Google agota el límite gratuito, avisa con un mensaje claro y la hora en que se reinicia. |
+| **Alarmas** | Nombre, motivo (lo dice el asistente por voz al sonar), sonido, repeticiones y el intervalo entre cada una. Suena mientras la app esté abierta y la pantalla encendida; para apagarla hay que resolver una cuenta chica, así no se calla con un toque sin querer. Si tenés Google conectado, cada alarma se refuerza con un evento en tu Calendar (con recordatorio), que sí llega aunque la app esté cerrada; ese evento se edita o se borra solo al editar o borrar la alarma. **No reemplaza al despertador nativo del teléfono**, que es lo único confiable con el teléfono bloqueado. |
 | **Ajustes** | Horas por jornada (define desde cuándo hay horas extra), jornadas por mes, descontar faltantes del banco (opcional), zona horaria, cuenta y cierre de sesión, conexión con Google, acceso (bloquear o desbloquear cuentas, solo el dueño), exportar Excel, voz del asistente (elegir voz y velocidad, con botón para probarla), tema claro/oscuro/automático. |
 | **Excel** | Hojas *Jornadas*, *Resumen diario* y *Banco de horas*, con duraciones en formato `[h]:mm:ss` y totales con fórmulas `SUM`. |
+
+**Sobre las alarmas:** un sitio web no puede sonar con el teléfono bloqueado o la app cerrada, es una restricción de los navegadores. Por eso las alarmas de esta app son un refuerzo para cuando estás usando el teléfono (cocinar, cortar una reunión, un descanso), no un reemplazo del despertador nativo; el evento que se crea en Google Calendar (si lo tenés conectado) es la parte que sí llega con la app cerrada, aunque solo suena una vez con el tono de Calendar.
 
 **Regla de cálculo:** extra del día = máx(0, total trabajado en el día − horas de jornada). Saldo del banco = extras (o correcciones manuales) − horas usadas ± ajustes (− faltantes, si activás esa opción). El día de una jornada es la fecha local de su hora de entrada.
 
@@ -113,6 +116,7 @@ backend/
   app/excel.py              exportación .xlsx
   app/assistant.py          asistente Gemini con function calling (15 herramientas)
   app/history.py            conversación con el asistente guardada por usuario
+  app/alarms.py             alarmas: creación, edición, refuerzo con Google Calendar
   app/usage.py              contador de uso de la IA (solicitudes y tokens por usuario y por día)
   app/google_integration.py ingreso con Google (OAuth) + Calendar + Tasks
   app/main.py               API REST y servidor del frontend
@@ -131,4 +135,5 @@ index.py (entrada Vercel) · vercel.json · pyproject.toml · requirements.txt
 
 `GET /api/status` · `POST /api/clock-in` · `POST /api/clock-out` · `GET|POST /api/shifts` · `PUT|DELETE /api/shifts/{id}` · `GET /api/summary?desde&hasta` · `PUT /api/days/{fecha}/extra` · `GET|POST /api/bank` · `PUT|DELETE /api/bank/{id}` · `GET|PUT /api/settings` · `GET /api/export.xlsx?desde&hasta` · `POST /api/assistant` · `GET|DELETE /api/assistant/history` · `GET /api/ai-usage` · `POST /api/google/disconnect`.
 Ingreso: `GET /api/auth/google/start` · `GET /api/google/callback` · `POST /api/auth/logout`. Acceso (solo el dueño): `GET /api/admin/usuarios` · `POST /api/admin/bloqueados` · `DELETE /api/admin/bloqueados/{correo}`.
+Alarmas: `GET|POST /api/alarms` · `PUT|DELETE /api/alarms/{id}` · `POST /api/alarms/{id}/dismiss`.
 Todas (menos health y las de ingreso) requieren la cookie de sesión y devuelven solo los datos del usuario. Documentación interactiva en `/docs`.

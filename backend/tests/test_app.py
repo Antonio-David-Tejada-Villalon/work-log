@@ -11,9 +11,9 @@ from openpyxl import load_workbook  # noqa: E402
 from io import BytesIO  # noqa: E402
 from sqlmodel import Session, select  # noqa: E402
 
-from backend.app import assistant, auth, calc, history, usage  # noqa: E402
+from backend.app import alarms, assistant, auth, calc, history, usage  # noqa: E402
 from backend.app import google_integration as gi  # noqa: E402
-from backend.app.db import (AiUsage, BankMovement, BlockedEmail, ChatMessage, DayOverride, GoogleToken,  # noqa: E402
+from backend.app.db import (AiUsage, Alarm, BankMovement, BlockedEmail, ChatMessage, DayOverride, GoogleToken,  # noqa: E402
                             LoginSession, OAuthState, Settings, Shift, User, engine, init_db, utcnow)
 from backend.app.main import app  # noqa: E402
 
@@ -25,7 +25,7 @@ FRIEND = "amigo@example.com"
 def clean_db():
     init_db()
     with Session(engine) as s:
-        for model in (AiUsage, ChatMessage, GoogleToken, DayOverride, BankMovement, Shift, Settings, LoginSession, OAuthState,
+        for model in (AiUsage, ChatMessage, Alarm, GoogleToken, DayOverride, BankMovement, Shift, Settings, LoginSession, OAuthState,
                       BlockedEmail, User):
             for row in s.exec(select(model)).all():
                 s.delete(row)
@@ -304,6 +304,96 @@ def test_google_disconnect_only_affects_the_user(monkeypatch):
     assert boss.post("/api/google/disconnect").status_code == 200
     assert boss.get("/api/status").json()["google"]["conectado"] is False
     assert friend.get("/api/status").json()["google"]["conectado"] is True
+
+
+# ---------------------------------------------------------------- alarmas
+def google_connect(uid: int) -> None:
+    with Session(engine) as s:
+        s.add(GoogleToken(user_id=uid, credentials_json='{"token": "t"}'))
+        s.commit()
+
+
+def test_alarms_crud_and_isolation():
+    boss, friend = client(OWNER), client(FRIEND)
+    r = boss.post("/api/alarms", json={"nombre": "Despertar", "cuando": "07:00", "motivo": "Arrancar el día",
+                                       "sonido": "urgente", "veces": 3, "intervalo_segundos": 10})
+    assert r.status_code == 200, r.text
+    a = r.json()
+    assert (a["nombre"], a["motivo"], a["sonido"], a["veces"], a["intervalo_segundos"]) == ("Despertar", "Arrancar el día", "urgente", 3, 10)
+    assert a["hora"].endswith("07:00:00-03:00") and a["en_calendar"] is False and a["confirmada"] is False
+    aid = a["id"]
+    assert [x["id"] for x in boss.get("/api/alarms").json()] == [aid]
+    # validaciones
+    assert boss.post("/api/alarms", json={"nombre": "", "cuando": "07:00"}).status_code == 400
+    assert boss.post("/api/alarms", json={"nombre": "x", "cuando": "07:00", "sonido": "rara"}).status_code == 400
+    assert boss.post("/api/alarms", json={"nombre": "x", "cuando": "07:00", "veces": 0}).status_code == 400
+    assert boss.post("/api/alarms", json={"nombre": "x", "cuando": "07:00", "veces": 999}).status_code == 400
+    assert boss.post("/api/alarms", json={"nombre": "x", "cuando": "07:00", "intervalo_segundos": 1}).status_code == 400
+    # modificar
+    r = boss.put(f"/api/alarms/{aid}", json={"cuando": "08:30", "veces": 5})
+    assert r.status_code == 200 and r.json()["hora"].endswith("08:30:00-03:00") and r.json()["veces"] == 5
+    # otro usuario no la ve ni puede tocarla
+    assert friend.get("/api/alarms").json() == []
+    assert friend.put(f"/api/alarms/{aid}", json={"veces": 1}).status_code == 400
+    assert friend.delete(f"/api/alarms/{aid}").status_code == 400
+    assert boss.delete(f"/api/alarms/{aid}").status_code == 200
+    assert boss.get("/api/alarms").json() == []
+
+
+def test_alarm_dismiss_confirms_and_resets_on_reschedule():
+    boss = client(OWNER)
+    aid = boss.post("/api/alarms", json={"nombre": "Reunión", "cuando": "09:00"}).json()["id"]
+    assert boss.post(f"/api/alarms/{aid}/dismiss").json()["confirmada"] is True
+    # reprogramarla la vuelve a dejar pendiente
+    assert boss.put(f"/api/alarms/{aid}", json={"cuando": "10:00"}).json()["confirmada"] is False
+
+
+def test_alarm_reinforces_with_calendar_event_and_stays_in_sync(monkeypatch):
+    uid, _ = make_user(OWNER)
+    boss = client(OWNER)
+    events = []
+    monkeypatch.setattr(gi, "create_event", lambda s, u, titulo, inicio, **k: (events.append(("create", titulo)), {"id": "ev1", "htmlLink": "x"})[1])
+    monkeypatch.setattr(gi, "update_event", lambda s, u, event_id, **k: events.append(("update", event_id, k.get("titulo"))))
+    monkeypatch.setattr(gi, "delete_event", lambda s, u, event_id: events.append(("delete", event_id)))
+
+    # sin Google conectado: no se intenta nada, y la alarma igual se crea bien
+    r = boss.post("/api/alarms", json={"nombre": "Sin Google", "cuando": "07:00"})
+    assert r.status_code == 200 and r.json()["en_calendar"] is False and events == []
+    boss.delete(f"/api/alarms/{r.json()['id']}")
+
+    google_connect(uid)
+    r = boss.post("/api/alarms", json={"nombre": "Despertar", "cuando": "07:00"})
+    aid = r.json()["id"]
+    assert r.json()["en_calendar"] is True and events == [("create", "⏰ Despertar")]
+    boss.put(f"/api/alarms/{aid}", json={"cuando": "08:00"})
+    assert events[-1] == ("update", "ev1", "⏰ Despertar")
+    boss.delete(f"/api/alarms/{aid}")
+    assert events[-1] == ("delete", "ev1")
+
+
+def test_alarm_calendar_failure_does_not_break_the_alarm(monkeypatch):
+    uid, _ = make_user(OWNER)
+    google_connect(uid)
+    monkeypatch.setattr(gi, "create_event", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("Google caído")))
+    r = client(OWNER).post("/api/alarms", json={"nombre": "Igual funciona", "cuando": "07:00"})
+    assert r.status_code == 200 and r.json()["en_calendar"] is False
+
+
+def test_assistant_alarm_tools():
+    uid, _ = make_user(OWNER)
+    other, _ = make_user(FRIEND)
+    with Session(engine) as s:
+        u, o = s.get(User, uid), s.get(User, other)
+        r = assistant.run_tool(s, u, "crear_alarma", {"nombre": "Despertar", "cuando": "07:00", "veces": 4})
+        assert r["nombre"] == "Despertar" and r["veces"] == 4
+        assert [x["nombre"] for x in assistant.run_tool(s, u, "listar_alarmas", {})] == ["Despertar"]
+        assert assistant.run_tool(s, o, "listar_alarmas", {}) == []  # otro usuario no la ve
+        m = assistant.run_tool(s, u, "modificar_alarma", {"id": r["id"], "veces": 8})
+        assert m["veces"] == 8
+        with pytest.raises(ValueError):  # otro usuario no puede tocarla
+            assistant.run_tool(s, o, "modificar_alarma", {"id": r["id"], "veces": 1})
+        assert "error" in assistant.run_tool(s, u, "eliminar_alarma", {"id": r["id"], "confirmado": False})
+        assert assistant.run_tool(s, u, "eliminar_alarma", {"id": r["id"], "confirmado": True}) == {"ok": True}
 
 
 # ---------------------------------------------------------------- conversación con el asistente

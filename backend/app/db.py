@@ -160,6 +160,26 @@ class AiUsage(SQLModel, table=True):
     output_tokens: int = 0
 
 
+class Alarm(SQLModel, table=True):
+    """Alarma que suena dentro de la app (mientras esté abierta y la pantalla encendida).
+
+    Si el usuario tiene Google conectado, se refuerza con un evento en Calendar (calendar_event_id), que sí llega
+    como notificación aunque la app esté cerrada; ese evento se mantiene sincronizado al editar o borrar la alarma.
+    """
+    __tablename__ = "alarms"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="users.id", index=True)
+    name: str
+    motivo: str = ""                    # lo que dice el asistente por voz al sonar; vacío = usa el nombre
+    run_at: datetime = Field(index=True, sa_type=DateTime)  # UTC sin tzinfo
+    sound: str = "clasica"
+    repeat_count: int = 5                # cuántas veces suena
+    interval_seconds: int = 15           # segundos entre cada repetición
+    calendar_event_id: str = ""          # vacío si no hay Google conectado o falló la sincronización
+    dismissed_at: Optional[datetime] = Field(default=None, sa_type=DateTime)  # confirmó que se despertó / la vio
+    created_at: datetime = Field(default_factory=utcnow, sa_type=DateTime)
+
+
 class GoogleToken(SQLModel, table=True):
     """Credenciales de Google Calendar y Tasks de cada usuario."""
     __tablename__ = "google_tokens"
@@ -187,5 +207,5 @@ def get_settings(s: Session, user_id: int) -> Settings:
 
 
 __all__ = ["User", "BlockedEmail", "LoginSession", "OAuthState", "Settings", "Shift", "DayOverride",
-           "BankMovement", "ChatMessage", "AiUsage", "GoogleToken", "engine", "init_db", "get_session", "get_settings", "utcnow",
-           "select", "Session", "ON_VERCEL"]
+           "BankMovement", "ChatMessage", "AiUsage", "Alarm", "GoogleToken", "engine", "init_db", "get_session",
+           "get_settings", "utcnow", "select", "Session", "ON_VERCEL"]

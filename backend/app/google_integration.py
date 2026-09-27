@@ -183,6 +183,35 @@ def create_event(s: Session, uid: int, titulo: str, inicio: str, fin: Optional[s
     return {"id": ev.get("id"), "enlace": ev.get("htmlLink"), "titulo": titulo, "inicio": body["start"]}
 
 
+def update_event(s: Session, uid: int, event_id: str, titulo: Optional[str] = None, inicio: Optional[str] = None,
+                 fin: Optional[str] = None, descripcion: Optional[str] = None,
+                 recordatorio_minutos: Optional[int] = None) -> dict:
+    body: dict = {}
+    if titulo is not None:
+        body["summary"] = titulo
+    if descripcion is not None:
+        body["description"] = descripcion
+    if inicio is not None:
+        st = get_settings(s, uid)
+        start_iso = _local_iso(inicio, s, uid)
+        end_iso = _local_iso(fin, s, uid) if fin else (datetime.fromisoformat(start_iso) + timedelta(minutes=30)).isoformat()
+        body["start"] = {"dateTime": start_iso, "timeZone": st.timezone}
+        body["end"] = {"dateTime": end_iso, "timeZone": st.timezone}
+    if recordatorio_minutos is not None:
+        body["reminders"] = {"useDefault": False, "overrides": [{"method": "popup", "minutes": int(recordatorio_minutos)}]}
+    ev = _service(s, uid, "calendar", "v3").events().patch(calendarId="primary", eventId=event_id, body=body).execute()
+    return {"id": ev.get("id"), "enlace": ev.get("htmlLink"), "titulo": ev.get("summary"), "inicio": ev.get("start")}
+
+
+def delete_event(s: Session, uid: int, event_id: str) -> None:
+    from googleapiclient.errors import HttpError
+    try:
+        _service(s, uid, "calendar", "v3").events().delete(calendarId="primary", eventId=event_id).execute()
+    except HttpError as e:
+        if e.resp.status not in (404, 410):  # ya no existe: no es un error para quien nos pidió borrarlo
+            raise
+
+
 def list_events(s: Session, uid: int, desde: Optional[str] = None, hasta: Optional[str] = None,
                 max_results: int = 15) -> list:
     st = get_settings(s, uid)
