@@ -130,6 +130,17 @@ def test_env_pin_is_backup(monkeypatch):
             s.commit()
 
 
+def test_dependencies_in_sync():
+    """Vercel instala desde pyproject.toml y en local se usa requirements.txt: deben listar lo mismo."""
+    import tomllib
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    in_pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
+    in_requirements = [ln.strip() for ln in (root / "requirements.txt").read_text(encoding="utf-8").splitlines()
+                       if ln.strip() and not ln.startswith("#")]
+    assert sorted(in_pyproject) == sorted(in_requirements)
+
+
 def test_breakdown():
     class St:  # jornada 8 h, mes 22 jornadas
         daily_hours, workdays_per_month = 8, 22
