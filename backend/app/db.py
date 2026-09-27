@@ -75,9 +75,9 @@ class User(SQLModel, table=True):
     last_login: Optional[datetime] = Field(default=None, sa_type=DateTime)
 
 
-class AllowedEmail(SQLModel, table=True):
-    """Correos invitados por el dueño (OWNER_EMAIL). El dueño siempre tiene acceso."""
-    __tablename__ = "allowed_emails"
+class BlockedEmail(SQLModel, table=True):
+    """Correos a los que el dueño (OWNER_EMAIL) les quitó el acceso. Cualquier otra cuenta de Google puede entrar."""
+    __tablename__ = "blocked_emails"
     email: str = Field(primary_key=True)                 # en minúsculas
     created_at: datetime = Field(default_factory=utcnow, sa_type=DateTime)
 
@@ -186,6 +186,6 @@ def get_settings(s: Session, user_id: int) -> Settings:
     return st
 
 
-__all__ = ["User", "AllowedEmail", "LoginSession", "OAuthState", "Settings", "Shift", "DayOverride",
+__all__ = ["User", "BlockedEmail", "LoginSession", "OAuthState", "Settings", "Shift", "DayOverride",
            "BankMovement", "ChatMessage", "AiUsage", "GoogleToken", "engine", "init_db", "get_session", "get_settings", "utcnow",
            "select", "Session", "ON_VERCEL"]

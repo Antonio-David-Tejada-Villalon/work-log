@@ -13,7 +13,7 @@ from sqlmodel import Session, select  # noqa: E402
 
 from backend.app import assistant, auth, calc, history, usage  # noqa: E402
 from backend.app import google_integration as gi  # noqa: E402
-from backend.app.db import (AiUsage, AllowedEmail, BankMovement, ChatMessage, DayOverride, GoogleToken,  # noqa: E402
+from backend.app.db import (AiUsage, BankMovement, BlockedEmail, ChatMessage, DayOverride, GoogleToken,  # noqa: E402
                             LoginSession, OAuthState, Settings, Shift, User, engine, init_db, utcnow)
 from backend.app.main import app  # noqa: E402
 
@@ -26,7 +26,7 @@ def clean_db():
     init_db()
     with Session(engine) as s:
         for model in (AiUsage, ChatMessage, GoogleToken, DayOverride, BankMovement, Shift, Settings, LoginSession, OAuthState,
-                      AllowedEmail, User):
+                      BlockedEmail, User):
             for row in s.exec(select(model)).all():
                 s.delete(row)
         s.commit()
@@ -50,9 +50,9 @@ def client(email: str | None = None) -> TestClient:
     return c
 
 
-def invite(email: str) -> None:
+def block(email: str) -> None:
     with Session(engine) as s:
-        auth.invite(s, email)
+        auth.block(s, email)
 
 
 # ---------------------------------------------------------------- acceso
@@ -62,7 +62,7 @@ def test_requires_login():
     assert c.get("/api/status").status_code == 401
     assert c.get("/api/shifts").status_code == 401
     assert c.post("/api/clock-in", json={}).status_code == 401
-    assert c.get("/api/admin/invitados").status_code == 401
+    assert c.get("/api/admin/usuarios").status_code == 401
     c.cookies.set(auth.COOKIE, "token-inventado")
     assert c.get("/api/status").status_code == 401
 
@@ -83,11 +83,9 @@ def test_session_token_is_stored_hashed_and_expires():
     assert c.get("/api/status").status_code == 401
 
 
-def test_uninvited_user_is_rejected():
-    _, token = make_user("intruso@example.com")  # existe y tiene sesión, pero no está invitado
-    c = client()
-    c.cookies.set(auth.COOKIE, token)
-    assert c.get("/api/status").status_code == 401
+def test_any_google_account_gets_in_without_invitation():
+    c = client("cualquiera@example.com")  # nadie lo invitó ni lo conoce el dueño
+    assert c.get("/api/status").status_code == 200
 
 
 def test_logout_closes_session():
@@ -153,7 +151,6 @@ def test_flow():
 
 # ---------------------------------------------------------------- cada usuario ve solo lo suyo
 def test_data_is_isolated_between_users():
-    invite(FRIEND)
     boss, friend = client(OWNER), client(FRIEND)
     sid = boss.post("/api/shifts", json={"fecha": "2026-09-21", "inicio": "08:00", "fin": "17:30"}).json()["id"]
     mid = boss.post("/api/bank", json={"fecha": "2026-09-25", "horas": 1}).json()["id"]
@@ -186,24 +183,29 @@ def test_data_is_isolated_between_users():
     assert rows(boss) == 4 and rows(friend) == 3  # encabezado + jornadas + fila de total
 
 
-# ---------------------------------------------------------------- invitados
-def test_owner_manages_invited():
+# ---------------------------------------------------------------- acceso y bloqueo
+def test_owner_manages_access():
     boss, friend = client(OWNER), client(FRIEND)
-    assert boss.get("/api/admin/invitados").json() == []
-    assert boss.post("/api/admin/invitados", json={"email": "no-es-correo"}).status_code == 400
-    assert boss.post("/api/admin/invitados", json={"email": OWNER}).status_code == 400  # ya tiene acceso
-    r = boss.post("/api/admin/invitados", json={"email": "  Amigo@Example.com "})
-    assert r.status_code == 200 and [i["email"] for i in r.json()] == [FRIEND]
+    friend.post("/api/shifts", json={"fecha": "2026-09-21", "inicio": "08:00", "fin": "09:00"})  # ya entró y cargó algo
+    assert [u["email"] for u in boss.get("/api/admin/usuarios").json()] == [FRIEND]
+    assert boss.post("/api/admin/bloqueados", json={"email": "no-es-correo"}).status_code == 400
+    assert boss.post("/api/admin/bloqueados", json={"email": OWNER}).status_code == 400  # no se puede bloquear a sí mismo
     # solo el dueño administra
-    assert friend.get("/api/admin/invitados").status_code == 403
-    assert friend.post("/api/admin/invitados", json={"email": "otro@example.com"}).status_code == 403
+    assert friend.get("/api/admin/usuarios").status_code == 403
+    assert friend.post("/api/admin/bloqueados", json={"email": "otro@example.com"}).status_code == 403
     assert friend.get("/api/status").json()["usuario"]["es_dueno"] is False
-    # al quitarlo se cierra su sesión, pero sus datos se conservan
-    friend.post("/api/shifts", json={"fecha": "2026-09-21", "inicio": "08:00", "fin": "09:00"})
-    assert boss.delete(f"/api/admin/invitados/{FRIEND}").json() == []
+    # bloquear corta el acceso al instante (se cierra la sesión), pero sus datos se conservan
+    r = boss.post("/api/admin/bloqueados", json={"email": "  Amigo@Example.com "})
+    assert r.status_code == 200 and [(u["email"], u["bloqueado"]) for u in r.json()] == [(FRIEND, True)]
     assert friend.get("/api/status").status_code == 401
-    boss.post("/api/admin/invitados", json={"email": FRIEND})
+    # desbloquear le permite volver a entrar (con una sesión nueva)
+    assert [u["bloqueado"] for u in boss.delete(f"/api/admin/bloqueados/{FRIEND}").json()] == [False]
     assert len(client(FRIEND).get("/api/shifts").json()) == 1
+    # se puede bloquear a alguien que todavía nunca entró
+    r = boss.post("/api/admin/bloqueados", json={"email": "nunca-entro@example.com"})
+    nuevo = next(u for u in r.json() if u["email"] == "nunca-entro@example.com")
+    assert nuevo["bloqueado"] is True and nuevo["nombre"] == "" and nuevo["ultimo_ingreso"] is None
+    assert client("nunca-entro@example.com").get("/api/status").status_code == 401
 
 
 # ---------------------------------------------------------------- ingreso con Google
@@ -256,8 +258,9 @@ def test_google_login_creates_session(monkeypatch):
     assert r.headers["location"].endswith("?login=error")
 
 
-def test_google_login_denied_for_uninvited(monkeypatch):
-    google_setup(monkeypatch, "intruso@example.com")
+def test_google_login_denied_for_blocked_account(monkeypatch):
+    block("bloqueado@example.com")
+    google_setup(monkeypatch, "bloqueado@example.com")
     c = client()
     state = start_login(c)
     monkeypatch.setattr(gi, "_flow", lambda state=None: FakeFlow())
@@ -268,9 +271,9 @@ def test_google_login_denied_for_uninvited(monkeypatch):
     assert c.get("/api/status").status_code == 401
 
 
-def test_google_login_invited_and_bad_state(monkeypatch):
+def test_google_login_open_access_and_bad_state(monkeypatch):
+    """Cualquier cuenta de Google entra, sin que nadie la haya invitado."""
     google_setup(monkeypatch, FRIEND)
-    invite(FRIEND)
     c = client()
     monkeypatch.setattr(gi, "_flow", lambda state=None: FakeFlow())
     r = c.get("/api/google/callback", params={"code": "codigo", "state": "inventado"}, follow_redirects=False)
@@ -291,7 +294,6 @@ def test_google_start_without_config_redirects_with_notice(monkeypatch):
 
 
 def test_google_disconnect_only_affects_the_user(monkeypatch):
-    invite(FRIEND)
     for email in (OWNER, FRIEND):
         uid, _ = make_user(email)
         with Session(engine) as s:
@@ -319,7 +321,6 @@ def fake_assistant(monkeypatch):
 
 def test_chat_history_is_the_same_on_every_device(monkeypatch):
     seen = fake_assistant(monkeypatch)
-    invite(FRIEND)
     pc, phone, friend = client(OWNER), client(OWNER), client(FRIEND)  # pc y teléfono: dos sesiones del mismo usuario
     assert phone.get("/api/assistant/history").json() == []
     assert pc.post("/api/assistant", json={"mensaje": "hola"}).json()["respuesta"] == "eco: hola"
@@ -392,7 +393,6 @@ def fake_gemini(monkeypatch, fail=None):
 
 def test_ai_usage_is_counted_per_user(monkeypatch):
     fake_gemini(monkeypatch)
-    invite(FRIEND)
     boss, friend = client(OWNER), client(FRIEND)
     assert client().get("/api/ai-usage").status_code == 401
     assert boss.get("/api/ai-usage").json()["yo"] == {"solicitudes": 0, "tokens_entrada": 0, "tokens_salida": 0}
@@ -402,7 +402,7 @@ def test_ai_usage_is_counted_per_user(monkeypatch):
     mine = boss.get("/api/ai-usage").json()
     assert mine["yo"] == {"solicitudes": 4, "tokens_entrada": 400, "tokens_salida": 80}
     assert mine["dia"] == usage.quota_day() and mine["reinicia"][:2] == "20"
-    # el dueño ve el de todos y el total; cada invitado solo el suyo
+    # el dueño ve el de todos y el total; cada quien más ve solo lo suyo
     assert {x["email"]: x["solicitudes"] for x in mine["todos"]} == {OWNER: 4, FRIEND: 2}
     assert mine["total"] == {"solicitudes": 6, "tokens_entrada": 600, "tokens_salida": 120}
     theirs = friend.get("/api/ai-usage").json()

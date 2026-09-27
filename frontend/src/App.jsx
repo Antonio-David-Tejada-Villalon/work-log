@@ -147,7 +147,7 @@ export default function App() {
 }
 
 const LOGIN_MSG = {
-  denied: 'Tu cuenta de Google no tiene acceso. Pedile al dueño de la app que te invite con ese correo.',
+  denied: 'El dueño de la app bloqueó el acceso a esa cuenta de Google.',
   error: 'No se pudo iniciar sesión con Google. Probá de nuevo.',
   config: 'La app todavía no está configurada para iniciar sesión. Avisale al dueño.',
 }
@@ -166,7 +166,7 @@ function LoginScreen({ msg }) {
             <i className="bi bi-google me-2" />Continuar con Google
           </a>
           <p className="form-text mt-3 mb-0">
-            Se te va a pedir permiso para ver tu correo y crear eventos y tareas en tu Google Calendar y Tasks. Cada persona ve solo sus propios datos.
+            Cualquier cuenta de Google puede entrar. Se te va a pedir permiso para ver tu correo y crear eventos y tareas en tu Google Calendar y Tasks. Cada persona ve solo sus propios datos.
           </p>
           <p className="form-text mb-0"><a href="/privacidad.html">Política de privacidad</a></p>
         </div>
@@ -709,7 +709,7 @@ function SettingsView({ status, refresh, notify }) {
         </div>
       </div>
 
-      {status.usuario.es_dueno && <InvitedSettings notify={notify} />}
+      {status.usuario.es_dueno && <UsersSettings notify={notify} />}
 
       <div className="card mb-3">
         <div className="card-body">
@@ -804,56 +804,61 @@ function AccountSettings({ status }) {
   )
 }
 
-// Solo lo ve el dueño: quién puede entrar a la app.
-function InvitedSettings({ notify }) {
+// Solo lo ve el dueño: acceso abierto a cualquier cuenta de Google, con la posibilidad de bloquear a alguien.
+function UsersSettings({ notify }) {
   const [list, setList] = useState(null)
   const [email, setEmail] = useState('')
   const [busy, setBusy] = useState(false)
-  useEffect(() => { api('/admin/invitados').then(setList).catch((e) => notify(e.message)) }, [notify])
+  useEffect(() => { api('/admin/usuarios').then(setList).catch((e) => notify(e.message)) }, [notify])
 
-  const add = async (e) => {
+  const blockEmail = async (e) => {
     e.preventDefault()
     setBusy(true)
     try {
-      setList(await api('/admin/invitados', { method: 'POST', body: { email } }))
+      setList(await api('/admin/bloqueados', { method: 'POST', body: { email } }))
       setEmail('')
-      notify('Invitación agregada')
+      notify('Correo bloqueado')
     } catch (err) { notify(err.message) } finally { setBusy(false) }
   }
-  const remove = async (mail) => {
-    if (!window.confirm(`¿Quitar el acceso a ${mail}? Se cierra su sesión; sus datos se conservan.`)) return
-    try { setList(await api(`/admin/invitados/${encodeURIComponent(mail)}`, { method: 'DELETE' })) } catch (err) { notify(err.message) }
+  const toggle = async (i) => {
+    if (!i.bloqueado && !window.confirm(`¿Bloquear a ${i.email}? Se cierra su sesión y no va a poder volver a entrar.`)) return
+    try {
+      setList(i.bloqueado ? await api(`/admin/bloqueados/${encodeURIComponent(i.email)}`, { method: 'DELETE' })
+        : await api('/admin/bloqueados', { method: 'POST', body: { email: i.email } }))
+    } catch (err) { notify(err.message) }
   }
   const lastLogin = (iso) => (iso ? `último ingreso ${new Date(iso + 'Z').toLocaleDateString('es-AR')}` : 'todavía no entró')
 
   return (
     <div className="card mb-3">
       <div className="card-body">
-        <h2 className="h6 card-title mb-3"><i className="bi bi-people me-2" />Invitados</h2>
-        <p className="small text-body-secondary">Solo pueden entrar los correos de esta lista (y el tuyo), con una cuenta de Google que use ese correo.</p>
-        <form className="input-group mb-3" onSubmit={add}>
-          <input className="form-control" type="email" inputMode="email" placeholder="correo@gmail.com" aria-label="Correo a invitar"
+        <h2 className="h6 card-title mb-3"><i className="bi bi-people me-2" />Acceso</h2>
+        <p className="small text-body-secondary">Cualquier cuenta de Google puede entrar por su cuenta. Acá podés bloquear a alguien puntual, aunque todavía no haya entrado.</p>
+        <form className="input-group mb-3" onSubmit={blockEmail}>
+          <input className="form-control" type="email" inputMode="email" placeholder="correo@gmail.com" aria-label="Correo a bloquear"
             value={email} onChange={(e) => setEmail(e.target.value)} />
-          <button className="btn btn-primary" type="submit" disabled={busy || !email.trim()}>Invitar</button>
+          <button className="btn btn-outline-danger" type="submit" disabled={busy || !email.trim()}>Bloquear</button>
         </form>
         {list === null ? (
           <div className="text-center py-2"><div className="spinner-border spinner-border-sm text-primary" role="status"><span className="visually-hidden">Cargando…</span></div></div>
         ) : list.length === 0 ? (
-          <p className="small text-body-secondary mb-0">Todavía no invitaste a nadie.</p>
+          <p className="small text-body-secondary mb-0">Todavía nadie más entró a la app.</p>
         ) : (
           <ul className="list-group list-group-flush">
             {list.map((i) => (
               <li key={i.email} className="list-group-item d-flex align-items-center justify-content-between px-0 bg-transparent">
                 <div style={{ minWidth: 0 }}>
-                  <div className="text-truncate">{i.nombre || i.email}</div>
+                  <div className="text-truncate">{i.nombre || i.email}{i.bloqueado && <span className="badge text-bg-danger ms-2">bloqueado</span>}</div>
                   <div className="small text-body-secondary text-truncate">{i.nombre ? `${i.email} · ` : ''}{lastLogin(i.ultimo_ingreso)}</div>
                 </div>
-                <button className="btn btn-sm btn-outline-danger ms-2" onClick={() => remove(i.email)} aria-label={`Quitar a ${i.email}`}><i className="bi bi-x-lg" /></button>
+                <button className={`btn btn-sm ms-2 ${i.bloqueado ? 'btn-outline-secondary' : 'btn-outline-danger'}`} onClick={() => toggle(i)}
+                  aria-label={i.bloqueado ? `Desbloquear a ${i.email}` : `Bloquear a ${i.email}`}>
+                  <i className={`bi ${i.bloqueado ? 'bi-arrow-counterclockwise' : 'bi-slash-circle'}`} />
+                </button>
               </li>
             ))}
           </ul>
         )}
-        <p className="form-text mt-3 mb-0">Mientras la app de Google esté en modo prueba, agregá también ese correo en Google Cloud → Google Auth Platform → Audience → Test users.</p>
       </div>
     </div>
   )

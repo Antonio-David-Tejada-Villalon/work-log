@@ -25,7 +25,7 @@ STATE_TTL = timedelta(minutes=30)
 
 
 class AccessDenied(Exception):
-    """La cuenta de Google es válida pero el dueño no la invitó."""
+    """La cuenta de Google es válida pero el dueño la bloqueó."""
 
 
 def configured() -> bool:
@@ -83,7 +83,7 @@ def finish_login(s: Session, code: str, state: str) -> User:
     if not email or not info.get("email_verified"):
         raise ValueError("Google no confirmó tu correo.")
     if not auth.is_allowed(s, email):
-        raise AccessDenied(email)  # antes de crear nada ni guardar sus permisos
+        raise AccessDenied(email)  # cuenta bloqueada: no se crea nada ni se guardan sus permisos
     user = s.exec(select(User).where(User.email == email)).first() or User(email=email)
     user.name = info.get("name") or user.name or email.split("@")[0]
     user.picture = info.get("picture") or user.picture

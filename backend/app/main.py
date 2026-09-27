@@ -27,7 +27,7 @@ app = FastAPI(title="Control Horario", version="2.0.0", lifespan=lifespan)
 
 
 def current_user(request: Request, s: Session = Depends(get_session)) -> User:
-    """Usuario de la sesión (cookie). Si ya no está invitado, la sesión deja de servir."""
+    """Usuario de la sesión (cookie). Si el dueño lo bloqueó, la sesión deja de servir."""
     u = auth.user_for_token(s, request.cookies.get(auth.COOKIE))
     if not u or not auth.is_allowed(s, u.email):
         raise HTTPException(401, "Iniciá sesión con Google para continuar.")
@@ -95,7 +95,7 @@ class ChatIn(BaseModel):
     historial: list[dict] = []  # obsoleto: la conversación la guarda el servidor (ver history.py)
 
 
-class InviteIn(BaseModel):
+class BlockIn(BaseModel):
     email: str
 
 
@@ -312,22 +312,22 @@ def google_disconnect(u: User = Depends(current_user), s: Session = Depends(get_
     return {"ok": True}
 
 
-# ---------------------------------------------------------------- invitados (solo el dueño)
-@app.get("/api/admin/invitados")
-def invited(_: User = Depends(owner_only), s: Session = Depends(get_session)):
-    return auth.list_invited(s)
+# ---------------------------------------------------------------- usuarios y bloqueo (solo el dueño)
+@app.get("/api/admin/usuarios")
+def users(_: User = Depends(owner_only), s: Session = Depends(get_session)):
+    return auth.list_users(s)
 
 
-@app.post("/api/admin/invitados")
-def invite(body: InviteIn, _: User = Depends(owner_only), s: Session = Depends(get_session)):
-    guard(lambda: auth.invite(s, body.email))
-    return auth.list_invited(s)
+@app.post("/api/admin/bloqueados")
+def block_user(body: BlockIn, _: User = Depends(owner_only), s: Session = Depends(get_session)):
+    guard(lambda: auth.block(s, body.email))
+    return auth.list_users(s)
 
 
-@app.delete("/api/admin/invitados/{email}")
-def uninvite(email: str, _: User = Depends(owner_only), s: Session = Depends(get_session)):
-    guard(lambda: auth.revoke(s, email))
-    return auth.list_invited(s)
+@app.delete("/api/admin/bloqueados/{email}")
+def unblock_user(email: str, _: User = Depends(owner_only), s: Session = Depends(get_session)):
+    guard(lambda: auth.unblock(s, email))
+    return auth.list_users(s)
 
 
 # ---------------------------------------------------------------- frontend compilado (frontend/dist)

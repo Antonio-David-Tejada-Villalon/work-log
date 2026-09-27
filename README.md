@@ -2,7 +2,7 @@
 
 App web instalable en el teléfono (PWA) para registrar tu jornada laboral, calcular horas extra, manejar un banco de horas y operar todo por voz con IA. Exporta a Excel y crea eventos, recordatorios y tareas en Google.
 
-**Multiusuario:** cada persona entra con su cuenta de Google y ve solo sus propios datos (jornadas, banco, ajustes y su Calendar/Tasks). El dueño de la app decide quién puede entrar.
+**Multiusuario:** cada persona entra con su cuenta de Google y ve solo sus propios datos (jornadas, banco, ajustes y su Calendar/Tasks). El acceso es abierto: cualquier cuenta de Google puede entrar; el dueño puede bloquear a alguien puntual.
 
 **Tecnologías (todas gratuitas):** Python 3.12 · FastAPI · SQLModel (SQLite en local / Postgres de Supabase en producción) · openpyxl · Google Gemini API (capa gratuita) · Google Calendar API y Tasks API · React 18 + Vite + vite-plugin-pwa · **Bootstrap 5.3** (personalizado con Sass) + **Bootstrap Icons** · Web Speech API del navegador (voz sin costo).
 
@@ -18,13 +18,13 @@ App web instalable en el teléfono (PWA) para registrar tu jornada laboral, calc
 | **Historial** | Jornadas por día (fecha, entrada, salida, duración). Agregar, editar o eliminar. Varios tramos en un mismo día se suman. Turnos que cruzan medianoche se calculan bien. Tocando el indicador de extras de un día se corrigen a mano (o se vuelve al cálculo automático). |
 | **Banco** | Saldo en `hh:mm:ss` y desglosado en **meses, días, horas, minutos y segundos**, de dos formas: en *jornadas laborales* (día = tu jornada configurada; mes = N jornadas) y en *tiempo reloj* (día = 24 h; mes = 30 días). Registrar uso (días/horas/minutos) o ajustes a favor o en contra; editar o eliminar movimientos. |
 | **Asistente** | Hablás o escribís: "entré a las 8", "ayer salí 17:10", "¿cuántas extras tengo?", "usá 1 día del banco el viernes", "recordame mañana 10:00 llamar al proveedor", "agregá la tarea enviar informe para el lunes". Responde en voz alta. Pide confirmación antes de eliminar. La conversación se guarda en tu cuenta (últimos 100 mensajes), así es la misma en todos tus dispositivos, y se puede borrar con *Borrar conversación*. Si Google agota el límite gratuito, avisa con un mensaje claro y la hora en que se reinicia. |
-| **Ajustes** | Horas por jornada (define desde cuándo hay horas extra), jornadas por mes, descontar faltantes del banco (opcional), zona horaria, cuenta y cierre de sesión, conexión con Google, invitados (solo el dueño), exportar Excel, voz del asistente (elegir voz y velocidad, con botón para probarla), tema claro/oscuro/automático. |
+| **Ajustes** | Horas por jornada (define desde cuándo hay horas extra), jornadas por mes, descontar faltantes del banco (opcional), zona horaria, cuenta y cierre de sesión, conexión con Google, acceso (bloquear o desbloquear cuentas, solo el dueño), exportar Excel, voz del asistente (elegir voz y velocidad, con botón para probarla), tema claro/oscuro/automático. |
 | **Excel** | Hojas *Jornadas*, *Resumen diario* y *Banco de horas*, con duraciones en formato `[h]:mm:ss` y totales con fórmulas `SUM`. |
 
 **Regla de cálculo:** extra del día = máx(0, total trabajado en el día − horas de jornada). Saldo del banco = extras (o correcciones manuales) − horas usadas ± ajustes (− faltantes, si activás esa opción). El día de una jornada es la fecha local de su hora de entrada.
 
-**Usuarios y acceso:** se entra con *Continuar con Google*; no hay contraseñas ni PIN. Solo pueden entrar el dueño (`OWNER_EMAIL`) y los correos que él invite en *Ajustes → Invitados*. Cada usuario tiene sus propias jornadas, banco de horas, ajustes y conexión con Google, y el asistente solo actúa sobre lo suyo. La sesión dura 30 días y va en una cookie segura (en la base de datos se guarda solo su hash). Si el dueño quita a alguien, se le cierra la sesión pero sus datos se conservan por si se lo vuelve a invitar.
-Quien administra la base de datos (Supabase) puede ver los datos de todos: conviene avisárselo a los invitados.
+**Usuarios y acceso:** se entra con *Continuar con Google*; no hay contraseñas ni PIN. El acceso es **abierto**: cualquier cuenta de Google que llegue al enlace puede entrar y usar la app (la única excepción es el dueño, definido en `OWNER_EMAIL`, que administra el acceso). Desde *Ajustes → Acceso* el dueño puede bloquear una cuenta puntual, ya haya entrado o no; se le corta la sesión al instante y no puede volver a entrar hasta que se la desbloquee. Cada usuario tiene sus propias jornadas, banco de horas, ajustes y conexión con Google, y el asistente solo actúa sobre lo suyo. La sesión dura 30 días y va en una cookie segura (en la base de datos se guarda solo su hash).
+**Compartí el enlace solo con quien confíes:** cualquiera que lo tenga puede entrar y usar la cuota gratuita de Gemini y el cupo de cuentas de Google del proyecto (ver sección 3). Quien administra la base de datos (Supabase) puede ver los datos de todos: conviene avisarlo a quienes uses la app.
 
 ---
 
@@ -64,13 +64,12 @@ Cada persona entra con su cuenta de Google, así que este paso es **obligatorio*
 
 1. <https://console.cloud.google.com> → crear un proyecto.
 2. *APIs y servicios → Biblioteca*: habilitá **Google Calendar API** y **Google Tasks API**.
-3. *Google Auth Platform* (antes "Pantalla de consentimiento OAuth"): en *Branding* poné nombre y correo; en *Audience* elegí tipo **Externo**. Mientras la app esté en "Prueba", agregá en **Test users** el correo del dueño y el de cada invitado (hasta 100).
-   Para pasar a **En producción** (sin lista de probadores ni vencimiento semanal), Google exige completar en *Branding* la **Application home page** (la URL de la app) y la **Application privacy policy link** (`https://TU-PROYECTO.vercel.app/privacidad.html`, una página que ya trae la app).
+3. *Google Auth Platform* (antes "Pantalla de consentimiento OAuth"): en *Branding* poné nombre y correo; en *Audience* elegí tipo **Externo**. Mientras la app esté en "Prueba", agregá en **Test users** el correo del dueño y el de cada persona que vaya a probarla (hasta 100 en total, de por vida). Como el acceso es abierto, conviene pasar a **En producción** cuanto antes: así no hace falta agregar a cada persona a mano y el permiso de Calendar no vence cada 7 días. Para eso, Google exige completar en *Branding* la **Application home page** (la URL de la app) y la **Application privacy policy link** (`https://TU-PROYECTO.vercel.app/privacidad.html`, una página que ya trae la app).
 4. *Clients → Create client → Aplicación web*. En **URI de redirección autorizados** agregá (dejá vacío *Authorized JavaScript origins*):
    - local: `http://localhost:8000/api/google/callback`
    - producción: `https://TU-PROYECTO.vercel.app/api/google/callback`
 5. Copiá el ID y el secreto en `GOOGLE_CLIENT_ID` y `GOOGLE_CLIENT_SECRET`, la URI en `GOOGLE_REDIRECT_URI`, tu correo de Google en `OWNER_EMAIL` y en `FRONTEND_URL` la dirección de la app (en local `http://localhost:8000`, o `http://localhost:5173` si usás Vite; en producción, la URL de Vercel).
-6. Abrí la app, tocá *Continuar con Google* y después, en *Ajustes → Invitados*, agregá los correos de quienes pueden entrar.
+6. Abrí la app y tocá *Continuar con Google* con el correo de `OWNER_EMAIL`: cualquier otra cuenta puede entrar directamente, sin que hagas nada. Si necesitás bloquear a alguien, es en *Ajustes → Acceso*.
 
 > Cada persona verá "Google no verificó esta app": es normal, con menos de 100 usuarios no hace falta verificarla (*Avanzado → Ir a … (no seguro)*). Con la app en estado "Prueba" Google vence el permiso de Calendar a los 7 días y hay que volver a entrar; para evitarlo pasá la app a *En producción* en *Audience*.
 
@@ -87,7 +86,7 @@ Cada persona entra con su cuenta de Google, así que este paso es **obligatorio*
 1. Subí esta carpeta a un repositorio de GitHub (el `.gitignore` ya excluye `.env`, `node_modules` y `dist`).
 2. En <https://vercel.com> → *Add New → Project* → importá el repo. Vercel detecta FastAPI en `index.py`; `vercel.json` compila el frontend (`npm ci && npm run build`) y le da hasta 60 s al asistente.
 3. *Settings → Environment Variables*: `OWNER_EMAIL`, `DATABASE_URL`, `GEMINI_API_KEY`, `GEMINI_MODEL`, `TIMEZONE`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI=https://TU-PROYECTO.vercel.app/api/google/callback` y `FRONTEND_URL=https://TU-PROYECTO.vercel.app`.
-4. *Deploy*. Cada `git push` vuelve a publicar. Abrí la URL y entrá con Google usando el correo de `OWNER_EMAIL`; después invitá a los demás en *Ajustes → Invitados*.
+4. *Deploy*. Cada `git push` vuelve a publicar. Abrí la URL y entrá con Google usando el correo de `OWNER_EMAIL`. Cualquier otra cuenta de Google ya puede entrar sola; compartí el enlace solo con quien confíes.
 
 **Instalar en el teléfono:** abrí la URL en Chrome (Android) → menú ⋮ → *Instalar app / Agregar a la pantalla principal*. En iPhone: Safari → Compartir → *Agregar a inicio* (si el reconocimiento de voz no está disponible en tu versión de iOS, podés escribir o usar el dictado del teclado).
 
@@ -108,8 +107,8 @@ La app funciona sin imágenes. Si generás las tuyas, guardalas con estos nombre
 
 ```
 backend/
-  app/db.py                 modelos y conexión (User, AllowedEmail, LoginSession, Settings, Shift, DayOverride, BankMovement, GoogleToken)
-  app/auth.py               sesiones por cookie, dueño e invitados
+  app/db.py                 modelos y conexión (User, BlockedEmail, LoginSession, Settings, Shift, DayOverride, BankMovement, GoogleToken)
+  app/auth.py               sesiones por cookie, dueño y bloqueo de cuentas
   app/calc.py               cálculos: jornadas, extras, banco, desgloses
   app/excel.py              exportación .xlsx
   app/assistant.py          asistente Gemini con function calling (15 herramientas)
@@ -131,5 +130,5 @@ index.py (entrada Vercel) · vercel.json · pyproject.toml · requirements.txt
 ## API (resumen)
 
 `GET /api/status` · `POST /api/clock-in` · `POST /api/clock-out` · `GET|POST /api/shifts` · `PUT|DELETE /api/shifts/{id}` · `GET /api/summary?desde&hasta` · `PUT /api/days/{fecha}/extra` · `GET|POST /api/bank` · `PUT|DELETE /api/bank/{id}` · `GET|PUT /api/settings` · `GET /api/export.xlsx?desde&hasta` · `POST /api/assistant` · `GET|DELETE /api/assistant/history` · `GET /api/ai-usage` · `POST /api/google/disconnect`.
-Ingreso: `GET /api/auth/google/start` · `GET /api/google/callback` · `POST /api/auth/logout`. Invitados (solo el dueño): `GET|POST /api/admin/invitados` · `DELETE /api/admin/invitados/{correo}`.
+Ingreso: `GET /api/auth/google/start` · `GET /api/google/callback` · `POST /api/auth/logout`. Acceso (solo el dueño): `GET /api/admin/usuarios` · `POST /api/admin/bloqueados` · `DELETE /api/admin/bloqueados/{correo}`.
 Todas (menos health y las de ingreso) requieren la cookie de sesión y devuelven solo los datos del usuario. Documentación interactiva en `/docs`.
