@@ -7,10 +7,10 @@ from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlmodel import Session
 
-from . import assistant, auth, calc
+from . import assistant, auth, calc, history, usage
 from . import google_integration as gi
 from .db import User, get_session, get_settings, init_db
 from .excel import build_xlsx
@@ -91,8 +91,8 @@ class BankEdit(BaseModel):
 
 
 class ChatIn(BaseModel):
-    mensaje: str
-    historial: list[dict] = []
+    mensaje: str = Field(min_length=1, max_length=2000)
+    historial: list[dict] = []  # obsoleto: la conversación la guarda el servidor (ver history.py)
 
 
 class InviteIn(BaseModel):
@@ -241,9 +241,30 @@ def export(desde: Optional[str] = None, hasta: Optional[str] = None, u: User = D
 @app.post("/api/assistant")
 def ai(body: ChatIn, u: User = Depends(current_user), s: Session = Depends(get_session)):
     try:
-        return assistant.chat(s, u, body.mensaje, body.historial)
+        out = assistant.chat(s, u, body.mensaje, history.context(s, u.id))
+    except assistant.AiUnavailable as e:  # límite de Google alcanzado o servicio saturado
+        raise HTTPException(e.status_code, str(e)) from e
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"Error del asistente: {e}") from e
+    history.add_exchange(s, u.id, body.mensaje, out["respuesta"], out["acciones"])
+    return out
+
+
+@app.get("/api/ai-usage")
+def ai_usage(u: User = Depends(current_user), s: Session = Depends(get_session)):
+    """Uso de la IA de hoy. El dueño ve además el de cada persona (comparten el mismo tope de Google)."""
+    return usage.report(s, u.id, auth.is_owner(u.email), calc.tz(get_settings(s, u.id)))
+
+
+@app.get("/api/assistant/history")
+def chat_history(u: User = Depends(current_user), s: Session = Depends(get_session)):
+    return [history.as_output(m) for m in history.recent(s, u.id)]
+
+
+@app.delete("/api/assistant/history")
+def chat_clear(u: User = Depends(current_user), s: Session = Depends(get_session)):
+    history.clear(s, u.id)
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------- ingreso con Google y sesión

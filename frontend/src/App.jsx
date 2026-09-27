@@ -526,35 +526,47 @@ const EJEMPLOS = [
   'Recordame mañana a las 10 llamar al proveedor',
 ]
 
-function Assistant({ status, refresh }) {
-  const [msgs, setMsgs] = useState([{ role: 'assistant', text: '¡Hola! Decime qué querés registrar, consultar o agendar.' }])
+const GREETING = { role: 'assistant', text: '¡Hola! Decime qué querés registrar, consultar o agendar.' }
+
+function Assistant({ status, refresh, notify }) {
+  const [msgs, setMsgs] = useState(null) // null = cargando; la conversación se guarda en tu cuenta, igual en todos los dispositivos
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
   const [voiceOut, setVoiceOut] = useState(true)
   const endRef = useRef(null)
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [msgs, busy])
+  useEffect(() => {
+    api('/assistant/history').then((h) => setMsgs(h.length ? h : [GREETING])).catch(() => setMsgs([GREETING]))
+  }, [])
 
   const send = useCallback(async (t) => {
     const m = (t ?? text).trim()
     if (!m || busy) return
     setText('')
-    const hist = msgs.slice(-10)
     setMsgs((x) => [...x, { role: 'user', text: m }])
     setBusy(true)
     try {
-      const r = await api('/assistant', { method: 'POST', body: { mensaje: m, historial: hist } })
+      const r = await api('/assistant', { method: 'POST', body: { mensaje: m } })
       setMsgs((x) => [...x, { role: 'assistant', text: r.respuesta, acciones: r.acciones }])
       if (voiceOut) speak(r.respuesta)
       if (r.acciones?.length) refresh()
     } catch (e) {
       setMsgs((x) => [...x, { role: 'assistant', text: '⚠ ' + e.message }])
     } finally { setBusy(false) }
-  }, [text, busy, msgs, voiceOut, refresh])
+  }, [text, busy, voiceOut, refresh])
 
   const { listening, interim, start, stop } = useVoice((t) => send(t))
 
+  const clear = async () => {
+    if (!window.confirm('¿Borrar toda la conversación con el asistente? Tus jornadas y demás datos no se tocan.')) return
+    try { await api('/assistant/history', { method: 'DELETE' }); setMsgs([GREETING]) } catch (e) { notify(e.message) }
+  }
+
   if (!status.ia) {
     return <div className="alert alert-warning"><i className="bi bi-exclamation-triangle me-2" />El asistente necesita la variable <b>GEMINI_API_KEY</b> en el servidor. Ver README.</div>
+  }
+  if (msgs === null) {
+    return <div className="text-center py-5"><div className="spinner-border text-primary" role="status"><span className="visually-hidden">Cargando…</span></div></div>
   }
 
   return (
@@ -578,6 +590,11 @@ function Assistant({ status, refresh }) {
       {msgs.length <= 1 && (
         <div className="d-flex flex-wrap gap-2 my-3">
           {EJEMPLOS.map((e) => <button key={e} className="btn btn-sm btn-outline-secondary rounded-pill" style={{ minHeight: 32 }} onClick={() => send(e)}>{e}</button>)}
+        </div>
+      )}
+      {msgs.length > 1 && (
+        <div className="text-end mt-2">
+          <button className="btn btn-link btn-sm text-decoration-none text-body-secondary p-0" onClick={clear}><i className="bi bi-trash3 me-1" />Borrar conversación</button>
         </div>
       )}
       <div className="card composer mt-3">
@@ -708,6 +725,8 @@ function SettingsView({ status, refresh, notify }) {
 
       <VoiceSettings />
 
+      {status.ia && <AiUsageSettings />}
+
       <div className="card mb-3">
         <div className="card-body">
           <h2 className="h6 card-title mb-3"><i className="bi bi-circle-half me-2" />Apariencia</h2>
@@ -723,6 +742,42 @@ function SettingsView({ status, refresh, notify }) {
       </div>
 
     </>
+  )
+}
+
+// Uso de la IA de hoy. El tope lo fija Google por proyecto y lo comparten todas las personas de la app.
+function AiUsageSettings() {
+  const [u, setU] = useState(null)
+  useEffect(() => { api('/ai-usage').then(setU).catch(() => setU(null)) }, [])
+  if (!u) return null
+  const n = (x) => x.toLocaleString('es-AR')
+  const hora = new Date(u.reinicia).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', hour12: false })
+  const line = (label, x) => (
+    <div className="d-flex justify-content-between align-items-baseline gap-3 py-1">
+      <span className="text-truncate">{label}</span>
+      <span className="text-end text-nowrap">{n(x.solicitudes)} solic. · {n(x.tokens_entrada + x.tokens_salida)} tokens</span>
+    </div>
+  )
+  return (
+    <div className="card mb-3">
+      <div className="card-body">
+        <h2 className="h6 card-title mb-3"><i className="bi bi-cpu me-2" />Uso de la IA hoy</h2>
+        {line('Tus mensajes', u.yo)}
+        <div className="small text-body-secondary mb-2">Entrada {n(u.yo.tokens_entrada)} · salida {n(u.yo.tokens_salida)} tokens</div>
+        {u.todos && (
+          <div className="border-top mt-2 pt-2">
+            <div className="small text-body-secondary mb-1">Todas las personas (comparten el mismo tope)</div>
+            {u.todos.length === 0 ? <div className="small text-body-secondary">Todavía nadie usó el asistente hoy.</div>
+              : u.todos.map((x) => <div key={x.email}>{line(x.nombre || x.email, x)}</div>)}
+            {u.todos.length > 0 && <div className="fw-semibold border-top mt-1 pt-1">{line('Total', u.total)}</div>}
+          </div>
+        )}
+        <p className="form-text mt-3 mb-0">
+          Un mensaje puede usar 2 solicitudes o más (consulta, acción y respuesta). El contador se reinicia a las {hora}, cuando Google renueva los topes diarios.
+          El tope real de tu proyecto y lo que resta se ven en <a href="https://aistudio.google.com/rate-limit" target="_blank" rel="noopener">Google AI Studio</a>.
+        </p>
+      </div>
+    </div>
   )
 }
 

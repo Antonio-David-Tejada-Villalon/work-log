@@ -2,17 +2,37 @@
 import json
 import os
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional
 
 from sqlmodel import Session
 
-from . import calc
+from . import calc, usage
 from . import google_integration as gi
 from .db import User, get_settings
 
 MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 MAX_STEPS = 6
 DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+
+
+class AiUnavailable(Exception):
+    """La IA no puede responder ahora (límite alcanzado o servicio saturado). El mensaje es claro para el usuario."""
+
+    def __init__(self, message: str, status_code: int):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def _friendly(e: Exception, s: Session, u: User) -> Optional[AiUnavailable]:
+    """Traduce los errores conocidos de Google a un mensaje entendible; None si no es uno de ellos."""
+    code = getattr(e, "code", None)
+    if code == 429:
+        hora = usage.next_reset(calc.tz(get_settings(s, u.id))).strftime("%H:%M")
+        return AiUnavailable("Se alcanzó el límite gratuito de la IA de Google. Si fue el límite por minuto, probá de nuevo "
+                             f"en un rato; el límite diario se reinicia a las {hora} (hora de tu zona).", 429)
+    if code == 503:
+        return AiUnavailable("La IA de Google tiene mucha demanda en este momento. Probá de nuevo en unos segundos.", 503)
+    return None
 
 
 def _fn(name: str, desc: str, props: dict, required: list[str] | None = None) -> dict:
@@ -140,7 +160,7 @@ def chat(s: Session, u: User, message: str, history: list[dict] | None = None) -
     if not key:
         return {"respuesta": "Falta configurar GEMINI_API_KEY en el servidor.", "acciones": []}
     from google import genai
-    from google.genai import types
+    from google.genai import errors, types
 
     client = genai.Client(api_key=key)
     contents: list = []
@@ -156,7 +176,15 @@ def chat(s: Session, u: User, message: str, history: list[dict] | None = None) -
     )
     acciones = []
     for _ in range(MAX_STEPS):
-        resp = client.models.generate_content(model=MODEL, contents=contents, config=config)
+        try:
+            resp = client.models.generate_content(model=MODEL, contents=contents, config=config)
+        except errors.APIError as e:
+            friendly = _friendly(e, s, u)
+            if friendly:
+                raise friendly from e
+            raise
+        um = resp.usage_metadata
+        usage.record(s, u.id, um.prompt_token_count if um else 0, um.total_token_count if um else 0)
         cand = resp.candidates[0] if resp.candidates else None
         calls = resp.function_calls or []
         if not calls:

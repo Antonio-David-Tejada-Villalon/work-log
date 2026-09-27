@@ -17,7 +17,7 @@ App web instalable en el teléfono (PWA) para registrar tu jornada laboral, calc
 | **Hoy** | Botón Iniciar/Finalizar jornada con cronómetro en vivo. Opción "Registrar con otra hora". Muestra trabajado hoy, extra hoy y saldo del banco. |
 | **Historial** | Jornadas por día (fecha, entrada, salida, duración). Agregar, editar o eliminar. Varios tramos en un mismo día se suman. Turnos que cruzan medianoche se calculan bien. Tocando el indicador de extras de un día se corrigen a mano (o se vuelve al cálculo automático). |
 | **Banco** | Saldo en `hh:mm:ss` y desglosado en **meses, días, horas, minutos y segundos**, de dos formas: en *jornadas laborales* (día = tu jornada configurada; mes = N jornadas) y en *tiempo reloj* (día = 24 h; mes = 30 días). Registrar uso (días/horas/minutos) o ajustes a favor o en contra; editar o eliminar movimientos. |
-| **Asistente** | Hablás o escribís: "entré a las 8", "ayer salí 17:10", "¿cuántas extras tengo?", "usá 1 día del banco el viernes", "recordame mañana 10:00 llamar al proveedor", "agregá la tarea enviar informe para el lunes". Responde en voz alta. Pide confirmación antes de eliminar. |
+| **Asistente** | Hablás o escribís: "entré a las 8", "ayer salí 17:10", "¿cuántas extras tengo?", "usá 1 día del banco el viernes", "recordame mañana 10:00 llamar al proveedor", "agregá la tarea enviar informe para el lunes". Responde en voz alta. Pide confirmación antes de eliminar. La conversación se guarda en tu cuenta (últimos 100 mensajes), así es la misma en todos tus dispositivos, y se puede borrar con *Borrar conversación*. Si Google agota el límite gratuito, avisa con un mensaje claro y la hora en que se reinicia. |
 | **Ajustes** | Horas por jornada (define desde cuándo hay horas extra), jornadas por mes, descontar faltantes del banco (opcional), zona horaria, cuenta y cierre de sesión, conexión con Google, invitados (solo el dueño), exportar Excel, voz del asistente (elegir voz y velocidad, con botón para probarla), tema claro/oscuro/automático. |
 | **Excel** | Hojas *Jornadas*, *Resumen diario* y *Banco de horas*, con duraciones en formato `[h]:mm:ss` y totales con fórmulas `SUM`. |
 
@@ -56,6 +56,7 @@ Pruebas: `pip install pytest` y luego `pytest -q` (desde la raíz).
 1. Entrá a <https://aistudio.google.com/apikey> con tu cuenta de Google y creá una API key.
 2. Ponela en `GEMINI_API_KEY`. El modelo se elige con `GEMINI_MODEL` (por defecto `gemini-3.5-flash-lite`, que responde en 1-3 s y alcanza para operar la app; `gemini-3.5-flash` es más capaz pero en pruebas tardó entre 10 y 30 s por respuesta).
 3. Los límites de la capa gratuita los fija Google y pueden cambiar; revisalos en la página de precios de la Gemini API.
+4. No hay un "saldo de tokens": Google limita las solicitudes y los tokens **por minuto** y las solicitudes **por día**, **por proyecto** (todas las personas de la app comparten el mismo tope). Los diarios se reinician a la medianoche del Pacífico de EE. UU. (las 04:00 en Argentina mientras rige el horario de verano de EE. UU., las 05:00 el resto del año). El tope real y lo que resta se ven en <https://aistudio.google.com/rate-limit>. En *Ajustes → Uso de la IA hoy* la app lleva la cuenta de lo consumido (el dueño ve el de cada persona).
 
 ## 3. Ingreso con Google, Calendar y Tasks (OAuth)
 
@@ -112,6 +113,8 @@ backend/
   app/calc.py               cálculos: jornadas, extras, banco, desgloses
   app/excel.py              exportación .xlsx
   app/assistant.py          asistente Gemini con function calling (15 herramientas)
+  app/history.py            conversación con el asistente guardada por usuario
+  app/usage.py              contador de uso de la IA (solicitudes y tokens por usuario y por día)
   app/google_integration.py ingreso con Google (OAuth) + Calendar + Tasks
   app/main.py               API REST y servidor del frontend
   tests/test_app.py         pruebas
@@ -127,6 +130,6 @@ index.py (entrada Vercel) · vercel.json · pyproject.toml · requirements.txt
 
 ## API (resumen)
 
-`GET /api/status` · `POST /api/clock-in` · `POST /api/clock-out` · `GET|POST /api/shifts` · `PUT|DELETE /api/shifts/{id}` · `GET /api/summary?desde&hasta` · `PUT /api/days/{fecha}/extra` · `GET|POST /api/bank` · `PUT|DELETE /api/bank/{id}` · `GET|PUT /api/settings` · `GET /api/export.xlsx?desde&hasta` · `POST /api/assistant` · `POST /api/google/disconnect`.
+`GET /api/status` · `POST /api/clock-in` · `POST /api/clock-out` · `GET|POST /api/shifts` · `PUT|DELETE /api/shifts/{id}` · `GET /api/summary?desde&hasta` · `PUT /api/days/{fecha}/extra` · `GET|POST /api/bank` · `PUT|DELETE /api/bank/{id}` · `GET|PUT /api/settings` · `GET /api/export.xlsx?desde&hasta` · `POST /api/assistant` · `GET|DELETE /api/assistant/history` · `GET /api/ai-usage` · `POST /api/google/disconnect`.
 Ingreso: `GET /api/auth/google/start` · `GET /api/google/callback` · `POST /api/auth/logout`. Invitados (solo el dueño): `GET|POST /api/admin/invitados` · `DELETE /api/admin/invitados/{correo}`.
 Todas (menos health y las de ingreso) requieren la cookie de sesión y devuelven solo los datos del usuario. Documentación interactiva en `/docs`.

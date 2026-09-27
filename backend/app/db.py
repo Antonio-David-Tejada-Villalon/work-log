@@ -139,6 +139,27 @@ class BankMovement(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow, sa_type=DateTime)
 
 
+class ChatMessage(SQLModel, table=True):
+    """Conversación con el asistente: los últimos mensajes de cada usuario (ver history.py)."""
+    __tablename__ = "chat_messages"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="users.id", index=True)
+    role: str                           # user | assistant
+    text: str
+    actions_json: str = ""              # herramientas que usó el asistente en esa respuesta (JSON)
+    created_at: datetime = Field(default_factory=utcnow, sa_type=DateTime)
+
+
+class AiUsage(SQLModel, table=True):
+    """Uso de la IA (Gemini) de cada usuario por día. El día es el del Pacífico de EE. UU., cuando Google reinicia las cuotas."""
+    __tablename__ = "ai_usage"
+    user_id: int = Field(foreign_key="users.id", primary_key=True)
+    day: str = Field(primary_key=True)  # YYYY-MM-DD
+    requests: int = 0
+    prompt_tokens: int = 0
+    output_tokens: int = 0
+
+
 class GoogleToken(SQLModel, table=True):
     """Credenciales de Google Calendar y Tasks de cada usuario."""
     __tablename__ = "google_tokens"
@@ -166,5 +187,5 @@ def get_settings(s: Session, user_id: int) -> Settings:
 
 
 __all__ = ["User", "AllowedEmail", "LoginSession", "OAuthState", "Settings", "Shift", "DayOverride",
-           "BankMovement", "GoogleToken", "engine", "init_db", "get_session", "get_settings", "utcnow",
+           "BankMovement", "ChatMessage", "AiUsage", "GoogleToken", "engine", "init_db", "get_session", "get_settings", "utcnow",
            "select", "Session", "ON_VERCEL"]

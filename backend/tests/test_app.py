@@ -11,10 +11,10 @@ from openpyxl import load_workbook  # noqa: E402
 from io import BytesIO  # noqa: E402
 from sqlmodel import Session, select  # noqa: E402
 
-from backend.app import auth, calc  # noqa: E402
+from backend.app import assistant, auth, calc, history, usage  # noqa: E402
 from backend.app import google_integration as gi  # noqa: E402
-from backend.app.db import (AllowedEmail, BankMovement, DayOverride, GoogleToken, LoginSession, OAuthState,  # noqa: E402
-                            Settings, Shift, User, engine, init_db, utcnow)
+from backend.app.db import (AiUsage, AllowedEmail, BankMovement, ChatMessage, DayOverride, GoogleToken,  # noqa: E402
+                            LoginSession, OAuthState, Settings, Shift, User, engine, init_db, utcnow)
 from backend.app.main import app  # noqa: E402
 
 OWNER = "dueno@example.com"
@@ -25,7 +25,7 @@ FRIEND = "amigo@example.com"
 def clean_db():
     init_db()
     with Session(engine) as s:
-        for model in (GoogleToken, DayOverride, BankMovement, Shift, Settings, LoginSession, OAuthState,
+        for model in (AiUsage, ChatMessage, GoogleToken, DayOverride, BankMovement, Shift, Settings, LoginSession, OAuthState,
                       AllowedEmail, User):
             for row in s.exec(select(model)).all():
                 s.delete(row)
@@ -302,6 +302,141 @@ def test_google_disconnect_only_affects_the_user(monkeypatch):
     assert boss.post("/api/google/disconnect").status_code == 200
     assert boss.get("/api/status").json()["google"]["conectado"] is False
     assert friend.get("/api/status").json()["google"]["conectado"] is True
+
+
+# ---------------------------------------------------------------- conversación con el asistente
+def fake_assistant(monkeypatch):
+    """Reemplaza a Gemini: responde con un eco y registra qué historial le llegó."""
+    seen = []
+
+    def fake_chat(s, u, message, history=None):
+        seen.append((u.email, message, list(history or [])))
+        return {"respuesta": f"eco: {message}", "acciones": [{"herramienta": "consultar_banco", "argumentos": {}, "ok": True}]}
+
+    monkeypatch.setattr(assistant, "chat", fake_chat)
+    return seen
+
+
+def test_chat_history_is_the_same_on_every_device(monkeypatch):
+    seen = fake_assistant(monkeypatch)
+    invite(FRIEND)
+    pc, phone, friend = client(OWNER), client(OWNER), client(FRIEND)  # pc y teléfono: dos sesiones del mismo usuario
+    assert phone.get("/api/assistant/history").json() == []
+    assert pc.post("/api/assistant", json={"mensaje": "hola"}).json()["respuesta"] == "eco: hola"
+    h = phone.get("/api/assistant/history").json()  # lo escrito en la PC aparece en el teléfono
+    assert [(m["role"], m["text"]) for m in h] == [("user", "hola"), ("assistant", "eco: hola")]
+    assert h[1]["acciones"][0]["herramienta"] == "consultar_banco" and h[0]["acciones"] == []
+    # el modelo recibe la conversación previa desde el servidor, no desde el navegador
+    phone.post("/api/assistant", json={"mensaje": "segunda", "historial": [{"role": "user", "text": "inventado"}]})
+    assert seen[1][2] == [{"role": "user", "text": "hola"}, {"role": "assistant", "text": "eco: hola"}]
+    # cada persona ve solo la suya
+    assert friend.get("/api/assistant/history").json() == []
+    friend.post("/api/assistant", json={"mensaje": "soy el amigo"})
+    assert seen[2][2] == []
+    assert [m["text"] for m in pc.get("/api/assistant/history").json()] == ["hola", "eco: hola", "segunda", "eco: segunda"]
+    # borrar la conversación no toca la de otro
+    assert friend.delete("/api/assistant/history").json() == {"ok": True}
+    assert friend.get("/api/assistant/history").json() == []
+    assert len(pc.get("/api/assistant/history").json()) == 4
+    assert pc.delete("/api/assistant/history").status_code == 200
+    assert phone.get("/api/assistant/history").json() == []
+
+
+def test_chat_history_requires_login_and_limits_size(monkeypatch):
+    fake_assistant(monkeypatch)
+    anon = client()
+    assert anon.get("/api/assistant/history").status_code == 401
+    assert anon.delete("/api/assistant/history").status_code == 401
+    boss = client(OWNER)
+    assert boss.post("/api/assistant", json={"mensaje": "x" * 2001}).status_code == 422
+    assert boss.post("/api/assistant", json={"mensaje": ""}).status_code == 422
+    assert boss.get("/api/assistant/history").json() == []  # los rechazados no se guardan
+
+
+def test_chat_history_keeps_only_the_latest_messages():
+    uid, _ = make_user(OWNER)
+    with Session(engine) as s:
+        for i in range(1, history.MAX_MESSAGES // 2 + 11):  # 10 intercambios más de los que entran
+            history.add_exchange(s, uid, f"msg {i}", f"resp {i}", [])
+        rows = history.recent(s, uid)
+        assert len(rows) == history.MAX_MESSAGES
+        assert rows[0].text == "msg 11" and rows[-1].text == f"resp {history.MAX_MESSAGES // 2 + 10}"
+        assert len(history.context(s, uid)) == history.CONTEXT
+
+
+# ---------------------------------------------------------------- uso de la IA y límites de Google
+def fake_gemini(monkeypatch, fail=None):
+    """Reemplaza al cliente de Gemini. Sin fail: pide una herramienta y luego responde (2 solicitudes de 100+20 tokens)."""
+    from google import genai
+    from google.genai import types
+    meta = types.GenerateContentResponseUsageMetadata(prompt_token_count=100, candidates_token_count=20, total_token_count=120)
+    calls = []
+
+    class FakeModels:
+        def generate_content(self, model, contents, config):
+            calls.append(1)
+            if fail:
+                raise fail
+            part = (types.Part(function_call=types.FunctionCall(name="consultar_banco", args={})) if len(calls) % 2
+                    else types.Part(text="Listo."))
+            return types.GenerateContentResponse(candidates=[types.Candidate(content=types.Content(role="model", parts=[part]))],
+                                                 usage_metadata=meta)
+
+    class FakeClient:
+        def __init__(self, api_key):
+            self.models = FakeModels()
+
+    monkeypatch.setenv("GEMINI_API_KEY", "x")
+    monkeypatch.setattr(genai, "Client", FakeClient)
+
+
+def test_ai_usage_is_counted_per_user(monkeypatch):
+    fake_gemini(monkeypatch)
+    invite(FRIEND)
+    boss, friend = client(OWNER), client(FRIEND)
+    assert client().get("/api/ai-usage").status_code == 401
+    assert boss.get("/api/ai-usage").json()["yo"] == {"solicitudes": 0, "tokens_entrada": 0, "tokens_salida": 0}
+    assert boss.post("/api/assistant", json={"mensaje": "uno"}).json()["respuesta"] == "Listo."  # 2 solicitudes a Gemini
+    boss.post("/api/assistant", json={"mensaje": "dos"})
+    friend.post("/api/assistant", json={"mensaje": "tres"})
+    mine = boss.get("/api/ai-usage").json()
+    assert mine["yo"] == {"solicitudes": 4, "tokens_entrada": 400, "tokens_salida": 80}
+    assert mine["dia"] == usage.quota_day() and mine["reinicia"][:2] == "20"
+    # el dueño ve el de todos y el total; cada invitado solo el suyo
+    assert {x["email"]: x["solicitudes"] for x in mine["todos"]} == {OWNER: 4, FRIEND: 2}
+    assert mine["total"] == {"solicitudes": 6, "tokens_entrada": 600, "tokens_salida": 120}
+    theirs = friend.get("/api/ai-usage").json()
+    assert theirs["yo"]["solicitudes"] == 2 and "todos" not in theirs and "total" not in theirs
+
+
+def test_quota_errors_become_clear_messages(monkeypatch):
+    from google.genai import errors
+    boss = client(OWNER)
+    fake_gemini(monkeypatch, fail=errors.APIError(429, {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "message": "quota"}}))
+    r = boss.post("/api/assistant", json={"mensaje": "hola"})
+    assert r.status_code == 429 and "límite gratuito" in r.json()["detail"] and "se reinicia a las" in r.json()["detail"]
+    assert "RESOURCE_EXHAUSTED" not in r.json()["detail"]
+    fake_gemini(monkeypatch, fail=errors.APIError(503, {"error": {"code": 503, "status": "UNAVAILABLE", "message": "busy"}}))
+    r = boss.post("/api/assistant", json={"mensaje": "hola"})
+    assert r.status_code == 503 and "mucha demanda" in r.json()["detail"]
+    fake_gemini(monkeypatch, fail=errors.APIError(500, {"error": {"code": 500, "message": "boom"}}))
+    r = boss.post("/api/assistant", json={"mensaje": "hola"})
+    assert r.status_code == 502 and r.json()["detail"].startswith("Error del asistente")
+    # lo que falló no cuenta como uso ni queda en la conversación
+    assert boss.get("/api/ai-usage").json()["yo"]["solicitudes"] == 0
+    assert boss.get("/api/assistant/history").json() == []
+
+
+def test_quota_day_follows_pacific_midnight():
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    utc = timezone.utc
+    assert usage.quota_day(datetime(2026, 9, 27, 6, 59, tzinfo=utc)) == "2026-09-26"  # todavía 23:59 en el Pacífico
+    assert usage.quota_day(datetime(2026, 9, 27, 7, 0, tzinfo=utc)) == "2026-09-27"
+    ar = ZoneInfo("America/Argentina/San_Juan")
+    verano = usage.next_reset(ar, datetime(2026, 9, 27, 12, 0, tzinfo=utc))  # EE. UU. con horario de verano
+    invierno = usage.next_reset(ar, datetime(2026, 12, 1, 12, 0, tzinfo=utc))
+    assert (verano.hour, verano.day) == (4, 28) and (invierno.hour, invierno.day) == (5, 2)
 
 
 # ---------------------------------------------------------------- lógica
