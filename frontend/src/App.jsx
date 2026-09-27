@@ -168,6 +168,7 @@ function LoginScreen({ msg }) {
           <p className="form-text mt-3 mb-0">
             Se te va a pedir permiso para ver tu correo y crear eventos y tareas en tu Google Calendar y Tasks. Cada persona ve solo sus propios datos.
           </p>
+          <p className="form-text mb-0"><a href="/privacidad.html">Política de privacidad</a></p>
         </div>
       </div>
     </main>

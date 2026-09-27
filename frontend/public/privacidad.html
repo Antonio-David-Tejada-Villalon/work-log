@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Política de privacidad · Control Horario</title>
+  <meta name="description" content="Qué datos guarda Control Horario, para qué se usan y cómo pedir que se eliminen." />
+  <link rel="icon" href="/icon-192.png" />
+  <style>
+    :root { --bg: #f6f4ef; --card: #ffffff; --text: #1c211f; --muted: #5b625f; --brand: #1f5c52; --line: #e2ded4; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #131715; --card: #1b211e; --text: #e8ece9; --muted: #9aa39e; --brand: #6fbfae; --line: #2b332f; }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    main { max-width: 720px; margin: 0 auto; padding: 24px 16px 48px; }
+    header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+    header img { width: 44px; height: 44px; border-radius: 10px; }
+    h1 { font-size: 1.5rem; margin: 0; line-height: 1.2; }
+    .updated { color: var(--muted); font-size: .9rem; margin: 4px 0 24px; }
+    section { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 4px 18px 14px; margin-bottom: 14px; }
+    h2 { font-size: 1.05rem; color: var(--brand); margin: 16px 0 6px; }
+    p, li { margin: 6px 0; }
+    ul { padding-left: 1.2rem; margin: 6px 0; }
+    a { color: var(--brand); }
+    .back { display: inline-block; margin-top: 8px; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <img src="/icon-192.png" alt="" />
+    <h1>Política de privacidad</h1>
+  </header>
+  <p class="updated">Control Horario · Última actualización: 27 de septiembre de 2026</p>
+
+  <section>
+    <h2>Qué es esta aplicación</h2>
+    <p>Control Horario es una aplicación web personal para registrar la jornada laboral, calcular horas extra y llevar un banco de horas, con un asistente de voz y texto. Es de uso no comercial y solo pueden entrar las personas que el dueño de la aplicación invitó.</p>
+  </section>
+
+  <section>
+    <h2>Qué datos guarda</h2>
+    <ul>
+      <li><strong>De tu cuenta de Google:</strong> tu correo, tu nombre y tu foto de perfil, para identificarte.</li>
+      <li><strong>Permisos de Google Calendar y Google Tasks:</strong> una credencial de acceso que permite, solo cuando se lo pedís al asistente, crear eventos, recordatorios y tareas, y consultar tus próximos eventos.</li>
+      <li><strong>Lo que cargás:</strong> tus jornadas, horas extra, movimientos del banco de horas y tus ajustes (horas de la jornada y zona horaria).</li>
+      <li><strong>Lo que le decís al asistente:</strong> los mensajes que escribís o dictás.</li>
+      <li><strong>Una cookie de sesión</strong> para mantenerte conectado (hasta 30 días o hasta que cierres sesión).</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Para qué se usan</h2>
+    <p>Únicamente para ofrecerte las funciones de la aplicación. No se venden, no se usan para publicidad ni para crear perfiles, y no se comparten con terceros, salvo con los proveedores técnicos indicados abajo.</p>
+    <p>El uso de la información recibida de las API de Google cumple con la <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noopener">Política de datos de usuario de los servicios de API de Google</a>, incluidos los requisitos de uso limitado.</p>
+  </section>
+
+  <section>
+    <h2>Con quién se procesan</h2>
+    <ul>
+      <li><strong>Google:</strong> inicio de sesión, Calendar y Tasks. Además, el asistente usa la API de Gemini: tus mensajes y los datos necesarios para responderte (por ejemplo tus jornadas o tu saldo) se envían a Gemini. Según los términos de Google para el nivel gratuito de esa API, ese contenido puede usarse para mejorar sus productos.</li>
+      <li><strong>Vercel:</strong> alojamiento de la aplicación.</li>
+      <li><strong>Supabase:</strong> base de datos donde se guardan tus datos.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Quién puede ver tus datos</h2>
+    <p>Dentro de la aplicación, cada persona ve solo lo suyo. Quien administra la aplicación y su base de datos puede acceder técnicamente a los datos de todos los usuarios, y se compromete a no usarlos para ningún otro fin.</p>
+  </section>
+
+  <section>
+    <h2>Conservación y eliminación</h2>
+    <ul>
+      <li>Tus datos se conservan mientras uses la aplicación.</li>
+      <li>Podés retirar el acceso a Calendar y Tasks en <em>Ajustes → Desconectar</em>, o desde tu cuenta de Google en <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">myaccount.google.com/permissions</a>.</li>
+      <li>Para que se eliminen tu cuenta y todos tus datos, pedilo al dueño de la aplicación (su correo de contacto figura en la pantalla de permisos de Google). Se borran de la base de datos.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Seguridad</h2>
+    <p>La aplicación funciona por HTTPS. La cookie de sesión no es accesible desde scripts y en la base de datos solo se guarda un hash de su token. Ningún sistema es infalible, pero se toman medidas razonables para proteger tu información.</p>
+  </section>
+
+  <section>
+    <h2>Cambios y contacto</h2>
+    <p>Si esta política cambia, se actualizará en esta página con la fecha correspondiente. Para consultas, contactá al dueño de la aplicación por el correo que figura en la pantalla de permisos de Google.</p>
+  </section>
+
+  <a class="back" href="/">← Volver a la aplicación</a>
+</main>
+</body>
+</html>

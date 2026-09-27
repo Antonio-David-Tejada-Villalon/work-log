@@ -64,6 +64,7 @@ Cada persona entra con su cuenta de Google, así que este paso es **obligatorio*
 1. <https://console.cloud.google.com> → crear un proyecto.
 2. *APIs y servicios → Biblioteca*: habilitá **Google Calendar API** y **Google Tasks API**.
 3. *Google Auth Platform* (antes "Pantalla de consentimiento OAuth"): en *Branding* poné nombre y correo; en *Audience* elegí tipo **Externo**. Mientras la app esté en "Prueba", agregá en **Test users** el correo del dueño y el de cada invitado (hasta 100).
+   Para pasar a **En producción** (sin lista de probadores ni vencimiento semanal), Google exige completar en *Branding* la **Application home page** (la URL de la app) y la **Application privacy policy link** (`https://TU-PROYECTO.vercel.app/privacidad.html`, una página que ya trae la app).
 4. *Clients → Create client → Aplicación web*. En **URI de redirección autorizados** agregá (dejá vacío *Authorized JavaScript origins*):
    - local: `http://localhost:8000/api/google/callback`
    - producción: `https://TU-PROYECTO.vercel.app/api/google/callback`
@@ -120,6 +121,7 @@ frontend/
   src/custom.scss           Bootstrap 5.3 con los tokens del Design System
   src/app.css               tokens extra y ajustes de tema oscuro
   src/theme.js              tema claro/oscuro/automático
+  public/privacidad.html    política de privacidad (Google la exige para publicar la app)
 index.py (entrada Vercel) · vercel.json · pyproject.toml · requirements.txt
 ```
 
