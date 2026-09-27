@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, downloadExcel, fmtDate, hhmm, hms, setPin, todayISO } from './api'
+import { api, apiUrl, downloadExcel, fmtDate, hhmm, hms, todayISO } from './api'
 import { getThemePref, setThemePref } from './theme'
 import { getRatePref, getVoicePref, isNatural, setRatePref, setVoicePref, speak, ttsSupported, useVoice, useVoices, voiceSupported } from './voice'
 
@@ -67,7 +67,8 @@ export default function App() {
   const [status, setStatus] = useState(null)
   const [fetchedAt, setFetchedAt] = useState(Date.now())
   const [toast, setToast] = useState('')
-  const [needPin, setNeedPin] = useState(false)
+  const [needLogin, setNeedLogin] = useState(false)
+  const [loginMsg] = useState(() => new URLSearchParams(location.search).get('login') || '')
   const [rev, setRev] = useState(0)
 
   const notify = useCallback((m) => { setToast(m); setTimeout(() => setToast(''), 3500) }, [])
@@ -75,25 +76,23 @@ export default function App() {
     try {
       setStatus(await api('/status'))
       setFetchedAt(Date.now())
-      setNeedPin(false)
+      setNeedLogin(false)
       setRev((r) => r + 1)
     } catch (e) {
-      if (e.status === 401) setNeedPin(true)
+      if (e.status === 401) setNeedLogin(true)
       else notify(e.message)
     }
   }, [notify])
 
   useEffect(() => {
     refresh()
-    const q = new URLSearchParams(location.search).get('google')
-    if (q) {
-      notify(q === 'ok' ? 'Google conectado correctamente' : 'No se pudo conectar Google')
+    if (loginMsg) {
       history.replaceState(null, '', '/')
-      setTab('cfg')
+      if (loginMsg === 'ok') notify('Sesión iniciada. Google Calendar y Tareas conectados.')
     }
-  }, [refresh, notify])
+  }, [refresh, notify, loginMsg])
 
-  if (needPin) return <PinScreen onDone={refresh} />
+  if (needLogin) return <LoginScreen msg={loginMsg} />
 
   const props = { status, refresh, notify, rev, fetchedAt, setTab }
   const current = TABS.find((t) => t[0] === tab)
@@ -147,76 +146,28 @@ export default function App() {
   )
 }
 
-const PIN_MIN = 4
+const LOGIN_MSG = {
+  denied: 'Tu cuenta de Google no tiene acceso. Pedile al dueño de la app que te invite con ese correo.',
+  error: 'No se pudo iniciar sesión con Google. Probá de nuevo.',
+  config: 'La app todavía no está configurada para iniciar sesión. Avisale al dueño.',
+}
 
-// Primera vez: el PIN se crea acá (se guarda con hash en el servidor). Después solo se ingresa.
-function PinScreen({ onDone }) {
-  const [mode, setMode] = useState(null) // null = consultando | 'setup' = primera vez | 'enter' = ya existe
-  const [p, setP] = useState('')
-  const [p2, setP2] = useState('')
-  const [err, setErr] = useState('')
-  const [busy, setBusy] = useState(false)
-
-  useEffect(() => {
-    api('/pin/status').then((r) => setMode(r.configurado ? 'enter' : 'setup')).catch((e) => setErr(e.message))
-  }, [])
-
-  const submit = async (e) => {
-    e.preventDefault()
-    const pin = p.trim()
-    setErr('')
-    if (mode === 'setup') {
-      if (pin.length < PIN_MIN) return setErr(`El PIN debe tener al menos ${PIN_MIN} caracteres.`)
-      if (pin !== p2.trim()) return setErr('Los dos PIN no coinciden.')
-    }
-    setBusy(true)
-    try {
-      if (mode === 'setup') await api('/pin/setup', { method: 'POST', body: { pin } })
-      setPin(pin)
-      await api('/status') // verifica el PIN para poder avisar si es incorrecto
-      onDone()
-    } catch (e2) {
-      setErr(e2.status === 401 ? 'PIN incorrecto.' : e2.message)
-    } finally { setBusy(false) }
-  }
-
-  const setup = mode === 'setup'
+// Cada persona entra con su cuenta de Google: un solo permiso cubre su identidad y su Calendar y Tasks.
+function LoginScreen({ msg }) {
   return (
     <main className="container app-container px-3 d-flex align-items-center" style={{ minHeight: '85dvh' }}>
       <div className="card w-100">
         <div className="card-body p-4 text-center">
           <img src="/icon-192.png" alt="" width="64" height="64" className="rounded-3 mb-3" />
           <h1 className="h4 mb-1">Control Horario</h1>
-          {mode === null && !err && <div className="spinner-border text-primary my-4" role="status"><span className="visually-hidden">Cargando…</span></div>}
-          {mode && (
-            <>
-              <p className="text-body-secondary small mb-4">
-                {setup ? 'Elegí un PIN para proteger tu app. Lo vas a necesitar al abrirla en cada dispositivo nuevo.' : 'Ingresá tu PIN para continuar'}
-              </p>
-              <form onSubmit={submit}>
-                <input className="form-control form-control-lg text-center mb-3" type="password" aria-label={setup ? 'PIN nuevo' : 'PIN'}
-                  placeholder={setup ? 'Elegí tu PIN' : ''} autoComplete={setup ? 'new-password' : 'current-password'}
-                  value={p} onChange={(e) => setP(e.target.value)} autoFocus />
-                {setup && (
-                  <input className="form-control form-control-lg text-center mb-3" type="password" aria-label="Repetir PIN"
-                    placeholder="Repetí el PIN" autoComplete="new-password" value={p2} onChange={(e) => setP2(e.target.value)} />
-                )}
-                {setup && <p className="form-text mt-0 mb-3">Mínimo {PIN_MIN} caracteres. Podés usar números y letras.</p>}
-                <button className="btn btn-primary btn-lg w-100" type="submit" disabled={busy || !p}>{setup ? 'Crear PIN y entrar' : 'Entrar'}</button>
-              </form>
-            </>
-          )}
-          {err && <div className="alert alert-danger small mt-3 mb-0 py-2" role="alert">{err}</div>}
-          {mode === 'enter' && (
-            <details className="text-start small text-body-secondary mt-4">
-              <summary>¿Olvidaste tu PIN?</summary>
-              <p className="mt-2 mb-1">Se restablece desde tu servidor, con tu cuenta de Supabase o Vercel:</p>
-              <ul className="ps-3 mb-0">
-                <li>En Supabase → <b>SQL Editor</b>, ejecutá <code>delete from apppin;</code> y al volver a abrir la app te pedirá crear uno nuevo.</li>
-                <li>O en Vercel agregá la variable <code>APP_PIN</code> con un PIN temporal, volvé a desplegar, entrá con él y cambialo en Ajustes.</li>
-              </ul>
-            </details>
-          )}
+          <p className="text-body-secondary small mb-4">Registrá tu jornada, tus horas extra y tu banco de horas. Entrá con tu cuenta de Google.</p>
+          {LOGIN_MSG[msg] && <div className="alert alert-danger small py-2 text-start" role="alert">{LOGIN_MSG[msg]}</div>}
+          <a className="btn btn-primary btn-lg w-100" href={apiUrl('/auth/google/start')}>
+            <i className="bi bi-google me-2" />Continuar con Google
+          </a>
+          <p className="form-text mt-3 mb-0">
+            Se te va a pedir permiso para ver tu correo y crear eventos y tareas en tu Google Calendar y Tasks. Cada persona ve solo sus propios datos.
+          </p>
         </div>
       </div>
     </main>
@@ -700,9 +651,6 @@ function SettingsView({ status, refresh, notify }) {
       notify('Configuración guardada'); refresh()
     } catch (e) { notify(e.message) }
   }
-  const connect = async () => {
-    try { const r = await api('/google/auth-url'); location.href = r.url } catch (e) { notify(e.message) }
-  }
   const disconnect = async () => {
     if (!window.confirm('¿Desconectar tu cuenta de Google?')) return
     await api('/google/disconnect', { method: 'POST' }); refresh()
@@ -711,6 +659,8 @@ function SettingsView({ status, refresh, notify }) {
 
   return (
     <>
+      <AccountSettings status={status} />
+
       <div className="card mb-3">
         <div className="card-body">
           <h2 className="h6 card-title mb-3"><i className="bi bi-briefcase me-2" />Jornada laboral</h2>
@@ -731,16 +681,17 @@ function SettingsView({ status, refresh, notify }) {
       <div className="card mb-3">
         <div className="card-body">
           <h2 className="h6 card-title mb-3"><i className="bi bi-google me-2" />Google Calendar y Tareas</h2>
-          {!status.google.configurado ? (
-            <div className="alert alert-secondary small mb-0">Falta configurar GOOGLE_CLIENT_ID y GOOGLE_CLIENT_SECRET en el servidor (ver README).</div>
-          ) : status.google.conectado ? (
-            <><p className="small text-success"><i className="bi bi-check-circle-fill me-1" />Cuenta conectada. El asistente puede crear eventos, recordatorios y tareas.</p>
+          {status.google.conectado ? (
+            <><p className="small text-success"><i className="bi bi-check-circle-fill me-1" />Conectado. El asistente puede crear eventos, recordatorios y tareas en tu cuenta.</p>
               <button className="btn btn-outline-danger w-100" onClick={disconnect}>Desconectar</button></>
           ) : (
-            <button className="btn btn-primary w-100" onClick={connect}><i className="bi bi-link-45deg me-1" />Conectar con Google</button>
+            <><p className="small text-body-secondary">No conectado: el asistente no puede crear eventos ni tareas. Puede pasar si Google venció el permiso.</p>
+              <a className="btn btn-primary w-100" href={apiUrl('/auth/google/start')}><i className="bi bi-link-45deg me-1" />Volver a conectar con Google</a></>
           )}
         </div>
       </div>
+
+      {status.usuario.es_dueno && <InvitedSettings notify={notify} />}
 
       <div className="card mb-3">
         <div className="card-body">
@@ -770,43 +721,83 @@ function SettingsView({ status, refresh, notify }) {
         </div>
       </div>
 
-      <PinSettings notify={notify} />
     </>
   )
 }
 
-function PinSettings({ notify }) {
-  const [cur, setCur] = useState('')
-  const [nue, setNue] = useState('')
-  const [rep, setRep] = useState('')
-  const [busy, setBusy] = useState(false)
-  const change = async (e) => {
-    e.preventDefault()
-    const n = nue.trim()
-    if (n.length < PIN_MIN) return notify(`El PIN nuevo debe tener al menos ${PIN_MIN} caracteres`)
-    if (n !== rep.trim()) return notify('Los dos PIN nuevos no coinciden')
-    setBusy(true)
-    try {
-      await api('/pin/change', { method: 'POST', body: { actual: cur.trim(), nuevo: n } })
-      setPin(n)
-      setCur(''); setNue(''); setRep('')
-      notify('PIN actualizado')
-    } catch (err) { notify(err.message) } finally { setBusy(false) }
+function AccountSettings({ status }) {
+  const u = status.usuario
+  const logout = async () => {
+    try { await api('/auth/logout', { method: 'POST' }) } catch { /* igual se vuelve al inicio */ }
+    location.href = '/'
   }
   return (
-    <div className="card">
+    <div className="card mb-3">
       <div className="card-body">
-        <h2 className="h6 card-title mb-3"><i className="bi bi-shield-lock me-2" />Cambiar PIN de acceso</h2>
-        <form onSubmit={change}>
-          <input className="form-control mb-2" type="password" aria-label="PIN actual" placeholder="PIN actual"
-            autoComplete="current-password" value={cur} onChange={(e) => setCur(e.target.value)} />
-          <input className="form-control mb-2" type="password" aria-label="PIN nuevo" placeholder="PIN nuevo"
-            autoComplete="new-password" value={nue} onChange={(e) => setNue(e.target.value)} />
-          <input className="form-control mb-3" type="password" aria-label="Repetir PIN nuevo" placeholder="Repetir PIN nuevo"
-            autoComplete="new-password" value={rep} onChange={(e) => setRep(e.target.value)} />
-          <button className="btn btn-outline-primary w-100" type="submit" disabled={busy || !cur || !nue || !rep}>Cambiar PIN</button>
+        <h2 className="h6 card-title mb-3"><i className="bi bi-person-circle me-2" />Cuenta</h2>
+        <div className="d-flex align-items-center gap-3 mb-3">
+          {u.foto && <img src={u.foto} alt="" width="44" height="44" className="rounded-circle" referrerPolicy="no-referrer" />}
+          <div className="flex-grow-1" style={{ minWidth: 0 }}>
+            <div className="fw-semibold text-truncate">{u.nombre || u.email}</div>
+            <div className="small text-body-secondary text-truncate">{u.email}{u.es_dueno && ' · dueño'}</div>
+          </div>
+        </div>
+        <button className="btn btn-outline-secondary w-100" onClick={logout}><i className="bi bi-box-arrow-right me-1" />Cerrar sesión</button>
+      </div>
+    </div>
+  )
+}
+
+// Solo lo ve el dueño: quién puede entrar a la app.
+function InvitedSettings({ notify }) {
+  const [list, setList] = useState(null)
+  const [email, setEmail] = useState('')
+  const [busy, setBusy] = useState(false)
+  useEffect(() => { api('/admin/invitados').then(setList).catch((e) => notify(e.message)) }, [notify])
+
+  const add = async (e) => {
+    e.preventDefault()
+    setBusy(true)
+    try {
+      setList(await api('/admin/invitados', { method: 'POST', body: { email } }))
+      setEmail('')
+      notify('Invitación agregada')
+    } catch (err) { notify(err.message) } finally { setBusy(false) }
+  }
+  const remove = async (mail) => {
+    if (!window.confirm(`¿Quitar el acceso a ${mail}? Se cierra su sesión; sus datos se conservan.`)) return
+    try { setList(await api(`/admin/invitados/${encodeURIComponent(mail)}`, { method: 'DELETE' })) } catch (err) { notify(err.message) }
+  }
+  const lastLogin = (iso) => (iso ? `último ingreso ${new Date(iso + 'Z').toLocaleDateString('es-AR')}` : 'todavía no entró')
+
+  return (
+    <div className="card mb-3">
+      <div className="card-body">
+        <h2 className="h6 card-title mb-3"><i className="bi bi-people me-2" />Invitados</h2>
+        <p className="small text-body-secondary">Solo pueden entrar los correos de esta lista (y el tuyo), con una cuenta de Google que use ese correo.</p>
+        <form className="input-group mb-3" onSubmit={add}>
+          <input className="form-control" type="email" inputMode="email" placeholder="correo@gmail.com" aria-label="Correo a invitar"
+            value={email} onChange={(e) => setEmail(e.target.value)} />
+          <button className="btn btn-primary" type="submit" disabled={busy || !email.trim()}>Invitar</button>
         </form>
-        <p className="form-text mb-0">Los otros dispositivos te lo van a pedir la próxima vez que abras la app.</p>
+        {list === null ? (
+          <div className="text-center py-2"><div className="spinner-border spinner-border-sm text-primary" role="status"><span className="visually-hidden">Cargando…</span></div></div>
+        ) : list.length === 0 ? (
+          <p className="small text-body-secondary mb-0">Todavía no invitaste a nadie.</p>
+        ) : (
+          <ul className="list-group list-group-flush">
+            {list.map((i) => (
+              <li key={i.email} className="list-group-item d-flex align-items-center justify-content-between px-0 bg-transparent">
+                <div style={{ minWidth: 0 }}>
+                  <div className="text-truncate">{i.nombre || i.email}</div>
+                  <div className="small text-body-secondary text-truncate">{i.nombre ? `${i.email} · ` : ''}{lastLogin(i.ultimo_ingreso)}</div>
+                </div>
+                <button className="btn btn-sm btn-outline-danger ms-2" onClick={() => remove(i.email)} aria-label={`Quitar a ${i.email}`}><i className="bi bi-x-lg" /></button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="form-text mt-3 mb-0">Mientras la app de Google esté en modo prueba, agregá también ese correo en Google Cloud → Google Auth Platform → Audience → Test users.</p>
       </div>
     </div>
   )

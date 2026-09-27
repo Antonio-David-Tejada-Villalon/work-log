@@ -32,15 +32,15 @@ def _d(seconds: float) -> float:
     return seconds / 86400
 
 
-def build_xlsx(s: Session, desde: Optional[str] = None, hasta: Optional[str] = None) -> bytes:
-    st = get_settings(s)
+def build_xlsx(s: Session, uid: int, desde: Optional[str] = None, hasta: Optional[str] = None) -> bytes:
+    st = get_settings(s, uid)
     wb = Workbook()
     wb.remove(wb.active)
 
     # 1) Jornadas
     ws = _sheet(wb, "Jornadas", ["ID", "Fecha", "Entrada", "Salida", "Duración", "Horas (decimal)", "Nota"],
                 [6, 12, 10, 10, 12, 15, 40])
-    shifts = calc.list_shifts(s, desde, hasta)
+    shifts = calc.list_shifts(s, uid, desde, hasta)
     for sh in shifts:
         ini = calc.to_local(sh.start, st)
         fin = calc.to_local(sh.end, st) if sh.end else None
@@ -61,7 +61,7 @@ def build_xlsx(s: Session, desde: Optional[str] = None, hasta: Optional[str] = N
     # 2) Resumen diario
     ws = _sheet(wb, "Resumen diario", ["Fecha", "Trabajado", "Objetivo", "Extra", "Faltante", "Ajuste manual", "Nota ajuste"],
                 [12, 12, 12, 12, 12, 14, 30])
-    days = calc.daily_summary(s, desde, hasta)
+    days = calc.daily_summary(s, uid, desde, hasta)
     for d in days:
         ws.append([calc.date.fromisoformat(d["fecha"]), _d(d["trabajado_segundos"]), _d(st.daily_hours * 3600),
                    _d(d["extra_segundos"]), _d(d["faltante_segundos"]), "Sí" if d["ajuste_manual"] else "No",
@@ -81,7 +81,7 @@ def build_xlsx(s: Session, desde: Optional[str] = None, hasta: Optional[str] = N
         c.font = Font(bold=True)
 
     # 3) Banco de horas (saldo total, sin filtro de fechas)
-    bank = calc.bank_status(s)
+    bank = calc.bank_status(s, uid)
     ws = _sheet(wb, "Banco de horas", ["Fecha", "Tipo", "Tiempo", "Nota"], [12, 10, 12, 40])
     for m in bank["movimientos"]:
         ws.append([calc.date.fromisoformat(m["fecha"]), m["tipo"], _d(m["segundos"]), m["nota"]])

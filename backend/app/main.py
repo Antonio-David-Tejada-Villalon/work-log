@@ -1,18 +1,18 @@
-"""API FastAPI de Control Horario + Banco de Horas. También sirve la PWA compilada (frontend/dist)."""
+"""API FastAPI de Control Horario + Banco de Horas (multiusuario). También sirve la PWA compilada (frontend/dist)."""
 import os
 from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
-from fastapi.responses import RedirectResponse, Response
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 from sqlmodel import Session
 
-from . import assistant, calc, security
+from . import assistant, auth, calc
 from . import google_integration as gi
-from .db import get_session, get_settings, init_db
+from .db import User, get_session, get_settings, init_db
 from .excel import build_xlsx
 
 FRONTEND_URL = os.getenv("FRONTEND_URL", "")
@@ -23,22 +23,21 @@ async def lifespan(_app):
     yield
 
 
-app = FastAPI(title="Control Horario", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Control Horario", version="2.0.0", lifespan=lifespan)
 
 
-def ensure_pin(result: str, wrong: str = "PIN incorrecto") -> None:
-    """Traduce el resultado de security.check a la respuesta HTTP correspondiente."""
-    if result == "locked":
-        raise HTTPException(429, "Demasiados intentos. Esperá un minuto e intentá de nuevo.")
-    if result == "setup":
-        raise HTTPException(401, "Creá tu PIN para empezar")
-    if result != "ok":
-        raise HTTPException(401, wrong)
+def current_user(request: Request, s: Session = Depends(get_session)) -> User:
+    """Usuario de la sesión (cookie). Si ya no está invitado, la sesión deja de servir."""
+    u = auth.user_for_token(s, request.cookies.get(auth.COOKIE))
+    if not u or not auth.is_allowed(s, u.email):
+        raise HTTPException(401, "Iniciá sesión con Google para continuar.")
+    return u
 
 
-def auth(x_app_pin: Optional[str] = Header(default=None), pin: Optional[str] = Query(default=None),
-         s: Session = Depends(get_session)) -> None:
-    ensure_pin(security.check(s, x_app_pin or pin))
+def owner_only(u: User = Depends(current_user)) -> User:
+    if not auth.is_owner(u.email):
+        raise HTTPException(403, "Solo el dueño de la app puede hacer esto.")
+    return u
 
 
 def guard(fn):
@@ -96,16 +95,8 @@ class ChatIn(BaseModel):
     historial: list[dict] = []
 
 
-class PinSetup(BaseModel):
-    pin: str
-
-
-class PinChange(BaseModel):
-    actual: str
-    nuevo: str
-
-
-R = Depends(auth)
+class InviteIn(BaseModel):
+    email: str
 
 
 # ---------------------------------------------------------------- estado general
@@ -114,130 +105,111 @@ def health():
     return {"ok": True}
 
 
-@app.get("/api/status", dependencies=[R])
-def status(s: Session = Depends(get_session)):
-    st = get_settings(s)
+@app.get("/api/status")
+def status(u: User = Depends(current_user), s: Session = Depends(get_session)):
+    st = get_settings(s, u.id)
     t = calc.today(st).isoformat()
-    op = calc.open_shift(s)
-    hoy = calc.daily_summary(s, t, t)
+    op = calc.open_shift(s, u.id)
+    hoy = calc.daily_summary(s, u.id, t, t)
     return {
         "hoy": t,
+        "usuario": {"email": u.email, "nombre": u.name, "foto": u.picture, "es_dueno": auth.is_owner(u.email)},
         "en_curso": calc.shift_out(op, st) if op else None,
         "resumen_hoy": hoy[0] if hoy else None,
-        "banco": {k: v for k, v in calc.bank_status(s).items() if k != "movimientos"},
+        "banco": {k: v for k, v in calc.bank_status(s, u.id).items() if k != "movimientos"},
         "ajustes": st.model_dump(),
-        "google": {"configurado": gi.configured(), "conectado": gi.connected(s)},
+        "google": {"configurado": gi.configured(), "conectado": gi.connected(s, u.id)},
         "ia": bool(os.getenv("GEMINI_API_KEY")),
     }
 
 
-# ---------------------------------------------------------------- PIN de acceso
-@app.get("/api/pin/status")
-def pin_status(s: Session = Depends(get_session)):
-    return {"configurado": security.is_configured(s)}
-
-
-@app.post("/api/pin/setup")
-def pin_setup(body: PinSetup, s: Session = Depends(get_session)):
-    """Crea el PIN la primera vez. Solo funciona mientras no haya ninguno."""
-    if security.is_configured(s):
-        raise HTTPException(409, "Ya hay un PIN configurado.")
-    guard(lambda: security.set_pin(s, body.pin))
-    return {"ok": True}
-
-
-@app.post("/api/pin/change")
-def pin_change(body: PinChange, s: Session = Depends(get_session)):
-    ensure_pin(security.check(s, body.actual), "El PIN actual no es correcto")
-    guard(lambda: security.set_pin(s, body.nuevo))
-    return {"ok": True}
-
-
 # ---------------------------------------------------------------- jornadas
-@app.post("/api/clock-in", dependencies=[R])
-def clock_in(body: ClockIn, s: Session = Depends(get_session)):
-    return guard(lambda: calc.shift_out(calc.clock_in(s, body.hora, body.nota), get_settings(s)))
+@app.post("/api/clock-in")
+def clock_in(body: ClockIn, u: User = Depends(current_user), s: Session = Depends(get_session)):
+    return guard(lambda: calc.shift_out(calc.clock_in(s, u.id, body.hora, body.nota), get_settings(s, u.id)))
 
 
-@app.post("/api/clock-out", dependencies=[R])
-def clock_out(body: ClockIn, s: Session = Depends(get_session)):
-    return guard(lambda: calc.shift_out(calc.clock_out(s, body.hora, body.nota), get_settings(s)))
+@app.post("/api/clock-out")
+def clock_out(body: ClockIn, u: User = Depends(current_user), s: Session = Depends(get_session)):
+    return guard(lambda: calc.shift_out(calc.clock_out(s, u.id, body.hora, body.nota), get_settings(s, u.id)))
 
 
-@app.get("/api/shifts", dependencies=[R])
-def shifts(desde: Optional[str] = None, hasta: Optional[str] = None, s: Session = Depends(get_session)):
-    st = get_settings(s)
-    return [calc.shift_out(x, st) for x in guard(lambda: calc.list_shifts(s, desde, hasta))]
+@app.get("/api/shifts")
+def shifts(desde: Optional[str] = None, hasta: Optional[str] = None, u: User = Depends(current_user),
+           s: Session = Depends(get_session)):
+    st = get_settings(s, u.id)
+    return [calc.shift_out(x, st) for x in guard(lambda: calc.list_shifts(s, u.id, desde, hasta))]
 
 
-@app.post("/api/shifts", dependencies=[R])
-def create_shift(body: ShiftIn, s: Session = Depends(get_session)):
+@app.post("/api/shifts")
+def create_shift(body: ShiftIn, u: User = Depends(current_user), s: Session = Depends(get_session)):
     if not body.inicio:
         raise HTTPException(400, "Falta la hora de inicio")
-    return guard(lambda: calc.shift_out(calc.create_shift(s, body.fecha, body.inicio, body.fin, body.nota or ""),
-                                        get_settings(s)))
+    return guard(lambda: calc.shift_out(calc.create_shift(s, u.id, body.fecha, body.inicio, body.fin, body.nota or ""),
+                                        get_settings(s, u.id)))
 
 
-@app.put("/api/shifts/{shift_id}", dependencies=[R])
-def update_shift(shift_id: int, body: ShiftIn, s: Session = Depends(get_session)):
+@app.put("/api/shifts/{shift_id}")
+def update_shift(shift_id: int, body: ShiftIn, u: User = Depends(current_user), s: Session = Depends(get_session)):
     return guard(lambda: calc.shift_out(
-        calc.update_shift(s, shift_id, body.fecha, body.inicio, body.fin, body.nota), get_settings(s)))
+        calc.update_shift(s, u.id, shift_id, body.fecha, body.inicio, body.fin, body.nota), get_settings(s, u.id)))
 
 
-@app.delete("/api/shifts/{shift_id}", dependencies=[R])
-def delete_shift(shift_id: int, s: Session = Depends(get_session)):
-    guard(lambda: calc.delete_shift(s, shift_id))
+@app.delete("/api/shifts/{shift_id}")
+def delete_shift(shift_id: int, u: User = Depends(current_user), s: Session = Depends(get_session)):
+    guard(lambda: calc.delete_shift(s, u.id, shift_id))
     return {"ok": True}
 
 
 # ---------------------------------------------------------------- resumen / extras
-@app.get("/api/summary", dependencies=[R])
-def summary(desde: Optional[str] = None, hasta: Optional[str] = None, s: Session = Depends(get_session)):
-    return {"totales": calc.totals(s, desde, hasta), "dias": calc.daily_summary(s, desde, hasta)}
+@app.get("/api/summary")
+def summary(desde: Optional[str] = None, hasta: Optional[str] = None, u: User = Depends(current_user),
+            s: Session = Depends(get_session)):
+    return {"totales": calc.totals(s, u.id, desde, hasta), "dias": calc.daily_summary(s, u.id, desde, hasta)}
 
 
-@app.put("/api/days/{day}/extra", dependencies=[R])
-def set_extra(day: str, body: DayExtraIn, s: Session = Depends(get_session)):
+@app.put("/api/days/{day}/extra")
+def set_extra(day: str, body: DayExtraIn, u: User = Depends(current_user), s: Session = Depends(get_session)):
     secs = None if body.horas is None else int(round(body.horas * 3600 + body.minutos * 60))
-    guard(lambda: calc.set_day_extra(s, day, secs, body.nota))
+    guard(lambda: calc.set_day_extra(s, u.id, day, secs, body.nota))
     return {"ok": True}
 
 
 # ---------------------------------------------------------------- banco de horas
-@app.get("/api/bank", dependencies=[R])
-def bank(s: Session = Depends(get_session)):
-    return calc.bank_status(s)
+@app.get("/api/bank")
+def bank(u: User = Depends(current_user), s: Session = Depends(get_session)):
+    return calc.bank_status(s, u.id)
 
 
-@app.post("/api/bank", dependencies=[R])
-def bank_add(body: BankIn, s: Session = Depends(get_session)):
+@app.post("/api/bank")
+def bank_add(body: BankIn, u: User = Depends(current_user), s: Session = Depends(get_session)):
     if body.tipo not in ("uso", "ajuste"):
         raise HTTPException(400, "tipo debe ser 'uso' o 'ajuste'")
-    return guard(lambda: calc.mov_out(calc.add_bank_movement(s, body.fecha, body.horas, body.dias, body.minutos,
+    return guard(lambda: calc.mov_out(calc.add_bank_movement(s, u.id, body.fecha, body.horas, body.dias, body.minutos,
                                                              body.tipo, body.nota)))
 
 
-@app.put("/api/bank/{mov_id}", dependencies=[R])
-def bank_edit(mov_id: int, body: BankEdit, s: Session = Depends(get_session)):
+@app.put("/api/bank/{mov_id}")
+def bank_edit(mov_id: int, body: BankEdit, u: User = Depends(current_user), s: Session = Depends(get_session)):
     secs = None if body.horas is None else int(round(body.horas * 3600 + body.minutos * 60))
-    return guard(lambda: calc.mov_out(calc.update_bank_movement(s, mov_id, body.fecha, secs, body.nota)))
+    return guard(lambda: calc.mov_out(calc.update_bank_movement(s, u.id, mov_id, body.fecha, secs, body.nota)))
 
 
-@app.delete("/api/bank/{mov_id}", dependencies=[R])
-def bank_delete(mov_id: int, s: Session = Depends(get_session)):
-    guard(lambda: calc.delete_bank_movement(s, mov_id))
+@app.delete("/api/bank/{mov_id}")
+def bank_delete(mov_id: int, u: User = Depends(current_user), s: Session = Depends(get_session)):
+    guard(lambda: calc.delete_bank_movement(s, u.id, mov_id))
     return {"ok": True}
 
 
 # ---------------------------------------------------------------- ajustes
-@app.get("/api/settings", dependencies=[R])
-def get_cfg(s: Session = Depends(get_session)):
-    return get_settings(s).model_dump()
+@app.get("/api/settings")
+def get_cfg(u: User = Depends(current_user), s: Session = Depends(get_session)):
+    return get_settings(s, u.id).model_dump()
 
 
-@app.put("/api/settings", dependencies=[R])
-def put_cfg(body: SettingsIn, s: Session = Depends(get_session)):
-    st = get_settings(s)
+@app.put("/api/settings")
+def put_cfg(body: SettingsIn, u: User = Depends(current_user), s: Session = Depends(get_session)):
+    st = get_settings(s, u.id)
     data = body.model_dump(exclude_none=True)
     if "timezone" in data:
         from zoneinfo import ZoneInfo
@@ -256,45 +228,85 @@ def put_cfg(body: SettingsIn, s: Session = Depends(get_session)):
 
 
 # ---------------------------------------------------------------- Excel
-@app.get("/api/export.xlsx", dependencies=[R])
-def export(desde: Optional[str] = None, hasta: Optional[str] = None, s: Session = Depends(get_session)):
-    data = build_xlsx(s, desde, hasta)
+@app.get("/api/export.xlsx")
+def export(desde: Optional[str] = None, hasta: Optional[str] = None, u: User = Depends(current_user),
+           s: Session = Depends(get_session)):
+    data = build_xlsx(s, u.id, desde, hasta)
     name = f"control_horario_{date.today().isoformat()}.xlsx"
     return Response(data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 # ---------------------------------------------------------------- IA
-@app.post("/api/assistant", dependencies=[R])
-def ai(body: ChatIn, s: Session = Depends(get_session)):
+@app.post("/api/assistant")
+def ai(body: ChatIn, u: User = Depends(current_user), s: Session = Depends(get_session)):
     try:
-        return assistant.chat(s, body.mensaje, body.historial)
+        return assistant.chat(s, u, body.mensaje, body.historial)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"Error del asistente: {e}") from e
 
 
-# ---------------------------------------------------------------- Google
-@app.get("/api/google/auth-url", dependencies=[R])
-def google_url(s: Session = Depends(get_session)):
-    return {"url": guard(lambda: gi.auth_url(s))}
+# ---------------------------------------------------------------- ingreso con Google y sesión
+def _redirect(param: str) -> RedirectResponse:
+    return RedirectResponse(f"{FRONTEND_URL or '/'}?login={param}")
+
+
+@app.get("/api/auth/google/start")
+def google_start(s: Session = Depends(get_session)):
+    try:
+        return RedirectResponse(gi.start_login(s))
+    except ValueError:
+        return _redirect("config")
 
 
 @app.get("/api/google/callback")
-def google_callback(code: str = "", state: str = "", error: str = "", s: Session = Depends(get_session)):
-    base = FRONTEND_URL or "/"
+def google_callback(request: Request, code: str = "", state: str = "", error: str = "",
+                    s: Session = Depends(get_session)):
     if error or not code:
-        return RedirectResponse(f"{base}?google=error")
+        return _redirect("error")
     try:
-        gi.finish_auth(s, code, state)
+        user = gi.finish_login(s, code, state)
+    except gi.AccessDenied:
+        return _redirect("denied")
     except Exception:  # noqa: BLE001
-        return RedirectResponse(f"{base}?google=error")
-    return RedirectResponse(f"{base}?google=ok")
+        return _redirect("error")
+    resp = _redirect("ok")
+    secure = FRONTEND_URL.startswith("https") or request.headers.get("x-forwarded-proto") == "https"
+    resp.set_cookie(auth.COOKIE, auth.create_session(s, user.id), max_age=auth.SESSION_DAYS * 86400,
+                    httponly=True, secure=secure, samesite="lax", path="/")
+    return resp
 
 
-@app.post("/api/google/disconnect", dependencies=[R])
-def google_disconnect(s: Session = Depends(get_session)):
-    gi.disconnect(s)
+@app.post("/api/auth/logout")
+def logout(request: Request, s: Session = Depends(get_session)):
+    auth.end_session(s, request.cookies.get(auth.COOKIE))
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(auth.COOKIE, path="/")
+    return resp
+
+
+@app.post("/api/google/disconnect")
+def google_disconnect(u: User = Depends(current_user), s: Session = Depends(get_session)):
+    gi.disconnect(s, u.id)
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- invitados (solo el dueño)
+@app.get("/api/admin/invitados")
+def invited(_: User = Depends(owner_only), s: Session = Depends(get_session)):
+    return auth.list_invited(s)
+
+
+@app.post("/api/admin/invitados")
+def invite(body: InviteIn, _: User = Depends(owner_only), s: Session = Depends(get_session)):
+    guard(lambda: auth.invite(s, body.email))
+    return auth.list_invited(s)
+
+
+@app.delete("/api/admin/invitados/{email}")
+def uninvite(email: str, _: User = Depends(owner_only), s: Session = Depends(get_session)):
+    guard(lambda: auth.revoke(s, email))
+    return auth.list_invited(s)
 
 
 # ---------------------------------------------------------------- frontend compilado (frontend/dist)

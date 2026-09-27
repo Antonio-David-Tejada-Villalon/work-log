@@ -1,4 +1,4 @@
-"""Lógica de negocio: fechas/horas locales, jornadas, horas extra y banco de horas."""
+"""Lógica de negocio: fechas/horas locales, jornadas, horas extra y banco de horas. Todo es por usuario (uid)."""
 from __future__ import annotations
 
 from collections import defaultdict
@@ -98,24 +98,32 @@ def shift_out(sh: Shift, st: Settings) -> dict:
     }
 
 
-def open_shift(s: Session) -> Optional[Shift]:
-    return s.exec(select(Shift).where(Shift.end == None).order_by(Shift.start.desc())).first()  # noqa: E711
+def _own_shift(s: Session, uid: int, shift_id: int) -> Shift:
+    sh = s.get(Shift, shift_id)
+    if not sh or sh.user_id != uid:  # una jornada ajena se trata como inexistente
+        raise ValueError(f"No existe la jornada {shift_id}.")
+    return sh
 
 
-def clock_in(s: Session, when: Optional[str] = None, note: str = "") -> Shift:
-    st = get_settings(s)
-    if open_shift(s):
+def open_shift(s: Session, uid: int) -> Optional[Shift]:
+    q = select(Shift).where(Shift.user_id == uid, Shift.end == None).order_by(Shift.start.desc())  # noqa: E711
+    return s.exec(q).first()
+
+
+def clock_in(s: Session, uid: int, when: Optional[str] = None, note: str = "") -> Shift:
+    st = get_settings(s, uid)
+    if open_shift(s, uid):
         raise ValueError("Ya hay una jornada en curso. Registrá la salida primero.")
-    sh = Shift(start=parse_dt(when, st) if when else utcnow().replace(microsecond=0), note=note)
+    sh = Shift(user_id=uid, start=parse_dt(when, st) if when else utcnow().replace(microsecond=0), note=note)
     s.add(sh)
     s.commit()
     s.refresh(sh)
     return sh
 
 
-def clock_out(s: Session, when: Optional[str] = None, note: str = "") -> Shift:
-    st = get_settings(s)
-    sh = open_shift(s)
+def clock_out(s: Session, uid: int, when: Optional[str] = None, note: str = "") -> Shift:
+    st = get_settings(s, uid)
+    sh = open_shift(s, uid)
     if not sh:
         raise ValueError("No hay una jornada en curso.")
     end = parse_dt(when, st, local_day(sh.start, st)) if when else utcnow().replace(microsecond=0)
@@ -130,10 +138,10 @@ def clock_out(s: Session, when: Optional[str] = None, note: str = "") -> Shift:
     return sh
 
 
-def create_shift(s: Session, day: Optional[str], start: str, end: Optional[str], note: str = "") -> Shift:
-    st = get_settings(s)
+def create_shift(s: Session, uid: int, day: Optional[str], start: str, end: Optional[str], note: str = "") -> Shift:
+    st = get_settings(s, uid)
     d = date.fromisoformat(day) if day else None
-    sh = Shift(start=parse_dt(start, st, d), end=parse_dt(end, st, d) if end else None, note=note)
+    sh = Shift(user_id=uid, start=parse_dt(start, st, d), end=parse_dt(end, st, d) if end else None, note=note)
     if sh.end and sh.end <= sh.start:
         sh.end += timedelta(days=1)  # turno que cruza medianoche (p.ej. 22:00 → 06:00)
     s.add(sh)
@@ -142,12 +150,10 @@ def create_shift(s: Session, day: Optional[str], start: str, end: Optional[str],
     return sh
 
 
-def update_shift(s: Session, shift_id: int, day: Optional[str] = None, start: Optional[str] = None,
+def update_shift(s: Session, uid: int, shift_id: int, day: Optional[str] = None, start: Optional[str] = None,
                  end: Optional[str] = None, note: Optional[str] = None) -> Shift:
-    st = get_settings(s)
-    sh = s.get(Shift, shift_id)
-    if not sh:
-        raise ValueError(f"No existe la jornada {shift_id}.")
+    st = get_settings(s, uid)
+    sh = _own_shift(s, uid, shift_id)
     base = date.fromisoformat(day) if day else local_day(sh.start, st)
     if start:
         sh.start = parse_dt(start, st, base)
@@ -167,17 +173,14 @@ def update_shift(s: Session, shift_id: int, day: Optional[str] = None, start: Op
     return sh
 
 
-def delete_shift(s: Session, shift_id: int) -> None:
-    sh = s.get(Shift, shift_id)
-    if not sh:
-        raise ValueError(f"No existe la jornada {shift_id}.")
-    s.delete(sh)
+def delete_shift(s: Session, uid: int, shift_id: int) -> None:
+    s.delete(_own_shift(s, uid, shift_id))
     s.commit()
 
 
-def list_shifts(s: Session, desde: Optional[str] = None, hasta: Optional[str] = None) -> list[Shift]:
-    st = get_settings(s)
-    q = select(Shift).order_by(Shift.start)
+def list_shifts(s: Session, uid: int, desde: Optional[str] = None, hasta: Optional[str] = None) -> list[Shift]:
+    st = get_settings(s, uid)
+    q = select(Shift).where(Shift.user_id == uid).order_by(Shift.start)
     if desde:
         q = q.where(Shift.start >= parse_dt(desde + "T00:00", st))
     if hasta:
@@ -186,13 +189,13 @@ def list_shifts(s: Session, desde: Optional[str] = None, hasta: Optional[str] = 
 
 
 # ---------------------------------------------------------------- resumen diario y banco
-def daily_summary(s: Session, desde: Optional[str] = None, hasta: Optional[str] = None) -> list[dict]:
-    st = get_settings(s)
+def daily_summary(s: Session, uid: int, desde: Optional[str] = None, hasta: Optional[str] = None) -> list[dict]:
+    st = get_settings(s, uid)
     target = st.daily_hours * 3600
     worked: dict[str, float] = defaultdict(float)
-    for sh in list_shifts(s, desde, hasta):
+    for sh in list_shifts(s, uid, desde, hasta):
         worked[local_day(sh.start, st).isoformat()] += shift_seconds(sh)
-    overrides = {o.day: o for o in s.exec(select(DayOverride)).all()}
+    overrides = {o.day: o for o in s.exec(select(DayOverride).where(DayOverride.user_id == uid)).all()}
     days = sorted(set(worked) | {d for d in overrides if (not desde or d >= desde) and (not hasta or d <= hasta)})
     out = []
     for d in days:
@@ -213,26 +216,26 @@ def daily_summary(s: Session, desde: Optional[str] = None, hasta: Optional[str] 
     return out
 
 
-def set_day_extra(s: Session, day: str, extra_seconds: Optional[int], note: str = "") -> None:
+def set_day_extra(s: Session, uid: int, day: str, extra_seconds: Optional[int], note: str = "") -> None:
     """Fija manualmente las extras de un día. extra_seconds=None elimina la corrección."""
     date.fromisoformat(day)
-    ov = s.get(DayOverride, day)
+    ov = s.get(DayOverride, (uid, day))
     if extra_seconds is None:
         if ov:
             s.delete(ov)
     else:
-        ov = ov or DayOverride(day=day, extra_seconds=0)
+        ov = ov or DayOverride(user_id=uid, day=day, extra_seconds=0)
         ov.extra_seconds, ov.note = int(extra_seconds), note
         s.add(ov)
     s.commit()
 
 
-def bank_status(s: Session) -> dict:
-    st = get_settings(s)
-    days = daily_summary(s)
+def bank_status(s: Session, uid: int) -> dict:
+    st = get_settings(s, uid)
+    days = daily_summary(s, uid)
     extras = sum(d["extra_segundos"] for d in days)
     deficits = sum(d["faltante_segundos"] for d in days)
-    movs = list(s.exec(select(BankMovement).order_by(BankMovement.day)).all())
+    movs = list(s.exec(select(BankMovement).where(BankMovement.user_id == uid).order_by(BankMovement.day)).all())
     used = sum(m.seconds for m in movs if m.seconds < 0)
     adjust = sum(m.seconds for m in movs if m.seconds > 0)
     total = extras + deficits + used + adjust
@@ -251,28 +254,33 @@ def mov_out(m: BankMovement) -> dict:
             "tipo": m.kind, "nota": m.note}
 
 
-def add_bank_movement(s: Session, day: str, hours: float = 0, days: float = 0, minutes: float = 0,
+def _own_movement(s: Session, uid: int, mov_id: int) -> BankMovement:
+    m = s.get(BankMovement, mov_id)
+    if not m or m.user_id != uid:  # un movimiento ajeno se trata como inexistente
+        raise ValueError(f"No existe el movimiento {mov_id}.")
+    return m
+
+
+def add_bank_movement(s: Session, uid: int, day: str, hours: float = 0, days: float = 0, minutes: float = 0,
                       kind: str = "uso", note: str = "") -> BankMovement:
     """kind='uso' resta del banco; kind='ajuste' suma (o resta si el valor es negativo)."""
-    st = get_settings(s)
+    st = get_settings(s, uid)
     date.fromisoformat(day)
     secs = int(round(days * st.daily_hours * 3600 + hours * 3600 + minutes * 60))
     if secs == 0:
         raise ValueError("Indicá una cantidad de horas, minutos o días distinta de cero.")
     if kind == "uso":
         secs = -abs(secs)
-    m = BankMovement(day=day, seconds=secs, kind=kind, note=note)
+    m = BankMovement(user_id=uid, day=day, seconds=secs, kind=kind, note=note)
     s.add(m)
     s.commit()
     s.refresh(m)
     return m
 
 
-def update_bank_movement(s: Session, mov_id: int, day: Optional[str] = None, seconds: Optional[int] = None,
-                         note: Optional[str] = None) -> BankMovement:
-    m = s.get(BankMovement, mov_id)
-    if not m:
-        raise ValueError(f"No existe el movimiento {mov_id}.")
+def update_bank_movement(s: Session, uid: int, mov_id: int, day: Optional[str] = None,
+                         seconds: Optional[int] = None, note: Optional[str] = None) -> BankMovement:
+    m = _own_movement(s, uid, mov_id)
     if day:
         date.fromisoformat(day)
         m.day = day
@@ -286,16 +294,13 @@ def update_bank_movement(s: Session, mov_id: int, day: Optional[str] = None, sec
     return m
 
 
-def delete_bank_movement(s: Session, mov_id: int) -> None:
-    m = s.get(BankMovement, mov_id)
-    if not m:
-        raise ValueError(f"No existe el movimiento {mov_id}.")
-    s.delete(m)
+def delete_bank_movement(s: Session, uid: int, mov_id: int) -> None:
+    s.delete(_own_movement(s, uid, mov_id))
     s.commit()
 
 
-def totals(s: Session, desde: Optional[str], hasta: Optional[str]) -> dict:
-    days = daily_summary(s, desde, hasta)
+def totals(s: Session, uid: int, desde: Optional[str], hasta: Optional[str]) -> dict:
+    days = daily_summary(s, uid, desde, hasta)
     w = sum(d["trabajado_segundos"] for d in days)
     e = sum(d["extra_segundos"] for d in days)
     return {"desde": desde, "hasta": hasta, "dias_trabajados": sum(1 for d in days if d["trabajado_segundos"] > 0),

@@ -8,7 +8,7 @@ from sqlmodel import Session
 
 from . import calc
 from . import google_integration as gi
-from .db import get_settings
+from .db import User, get_settings
 
 MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 MAX_STEPS = 6
@@ -59,40 +59,42 @@ TOOLS = [
 ]
 
 
-def run_tool(s: Session, name: str, a: dict[str, Any]) -> Any:
-    st = get_settings(s)
+def run_tool(s: Session, u: User, name: str, a: dict[str, Any]) -> Any:
+    """Ejecuta una herramienta en nombre del usuario u: solo ve y modifica lo suyo."""
+    uid = u.id
+    st = get_settings(s, uid)
     if name == "fichar_entrada":
-        return calc.shift_out(calc.clock_in(s, a.get("hora"), a.get("nota", "")), st)
+        return calc.shift_out(calc.clock_in(s, uid, a.get("hora"), a.get("nota", "")), st)
     if name == "fichar_salida":
-        return calc.shift_out(calc.clock_out(s, a.get("hora"), a.get("nota", "")), st)
+        return calc.shift_out(calc.clock_out(s, uid, a.get("hora"), a.get("nota", "")), st)
     if name == "registrar_jornada":
-        return calc.shift_out(calc.create_shift(s, a["fecha"], a["inicio"], a["fin"], a.get("nota", "")), st)
+        return calc.shift_out(calc.create_shift(s, uid, a["fecha"], a["inicio"], a["fin"], a.get("nota", "")), st)
     if name == "modificar_jornada":
-        return calc.shift_out(calc.update_shift(s, int(a["id"]), a.get("fecha"), a.get("inicio"), a.get("fin"),
+        return calc.shift_out(calc.update_shift(s, uid, int(a["id"]), a.get("fecha"), a.get("inicio"), a.get("fin"),
                                                 a.get("nota")), st)
     if name == "eliminar_jornada":
         if not a.get("confirmado"):
             return {"error": "Falta confirmación del usuario."}
-        calc.delete_shift(s, int(a["id"]))
+        calc.delete_shift(s, uid, int(a["id"]))
         return {"ok": True}
     if name == "listar_jornadas":
-        return [calc.shift_out(x, st) for x in calc.list_shifts(s, a.get("desde"), a.get("hasta"))][-60:]
+        return [calc.shift_out(x, st) for x in calc.list_shifts(s, uid, a.get("desde"), a.get("hasta"))][-60:]
     if name == "resumen":
-        return {"totales": calc.totals(s, a.get("desde"), a.get("hasta")),
-                "dias": calc.daily_summary(s, a.get("desde"), a.get("hasta"))[-31:]}
+        return {"totales": calc.totals(s, uid, a.get("desde"), a.get("hasta")),
+                "dias": calc.daily_summary(s, uid, a.get("desde"), a.get("hasta"))[-31:]}
     if name == "consultar_banco":
-        b = calc.bank_status(s)
+        b = calc.bank_status(s, uid)
         b["movimientos"] = b["movimientos"][-10:]
         return b
     if name == "usar_banco":
-        return calc.mov_out(calc.add_bank_movement(s, a["fecha"], a.get("horas", 0), a.get("dias", 0),
+        return calc.mov_out(calc.add_bank_movement(s, uid, a["fecha"], a.get("horas", 0), a.get("dias", 0),
                                                    a.get("minutos", 0), "uso", a.get("nota", "")))
     if name == "ajustar_banco":
-        return calc.mov_out(calc.add_bank_movement(s, a["fecha"], a.get("horas", 0), 0, a.get("minutos", 0),
+        return calc.mov_out(calc.add_bank_movement(s, uid, a["fecha"], a.get("horas", 0), 0, a.get("minutos", 0),
                                                    "ajuste", a.get("nota", "")))
     if name == "fijar_extras_dia":
         secs = None if a.get("quitar") else int(round(a.get("horas", 0) * 3600 + a.get("minutos", 0) * 60))
-        calc.set_day_extra(s, a["fecha"], secs, a.get("nota", ""))
+        calc.set_day_extra(s, uid, a["fecha"], secs, a.get("nota", ""))
         return {"ok": True}
     if name == "configurar":
         if "horas_diarias" in a:
@@ -106,22 +108,23 @@ def run_tool(s: Session, name: str, a: dict[str, Any]) -> Any:
         return {"horas_diarias": st.daily_hours, "dias_laborables_mes": st.workdays_per_month,
                 "descontar_faltantes": st.count_deficit}
     if name == "crear_evento_calendar":
-        return gi.create_event(s, a["titulo"], a["inicio"], a.get("fin"), a.get("descripcion", ""),
+        return gi.create_event(s, uid, a["titulo"], a["inicio"], a.get("fin"), a.get("descripcion", ""),
                                a.get("recordatorio_minutos", 10), bool(a.get("todo_el_dia")))
     if name == "listar_eventos_calendar":
-        return gi.list_events(s, a.get("desde"), a.get("hasta"))
+        return gi.list_events(s, uid, a.get("desde"), a.get("hasta"))
     if name == "crear_tarea":
-        return gi.create_task(s, a["titulo"], a.get("fecha"), a.get("notas", ""))
+        return gi.create_task(s, uid, a["titulo"], a.get("fecha"), a.get("notas", ""))
     return {"error": f"Herramienta desconocida: {name}"}
 
 
-def _system_prompt(s: Session) -> str:
-    st = get_settings(s)
+def _system_prompt(s: Session, u: User) -> str:
+    st = get_settings(s, u.id)
     now = datetime.now(calc.tz(st))
-    abierta = calc.open_shift(s)
+    abierta = calc.open_shift(s, u.id)
     return (
         "Sos el asistente de una app personal de control horario y banco de horas extra. Respondé en español "
         "rioplatense, breve y claro (tus respuestas se leen en voz alta: sin tablas ni markdown). "
+        f"Hablás con {u.name or u.email}. "
         f"Fecha y hora actual: {DIAS[now.weekday()]} {now.strftime('%d/%m/%Y %H:%M')} ({st.timezone}). "
         f"Jornada normal: {st.daily_hours} h; mes laboral: {st.workdays_per_month} jornadas. "
         f"Jornada en curso: {'sí, desde ' + calc.to_local(abierta.start, st).strftime('%H:%M') if abierta else 'no'}. "
@@ -132,7 +135,7 @@ def _system_prompt(s: Session) -> str:
     )
 
 
-def chat(s: Session, message: str, history: list[dict] | None = None) -> dict:
+def chat(s: Session, u: User, message: str, history: list[dict] | None = None) -> dict:
     key = os.getenv("GEMINI_API_KEY")
     if not key:
         return {"respuesta": "Falta configurar GEMINI_API_KEY en el servidor.", "acciones": []}
@@ -147,7 +150,7 @@ def chat(s: Session, message: str, history: list[dict] | None = None) -> dict:
             contents.append(types.Content(role=role, parts=[types.Part(text=h["text"])]))
     contents.append(types.Content(role="user", parts=[types.Part(text=message)]))
     config = types.GenerateContentConfig(
-        system_instruction=_system_prompt(s),
+        system_instruction=_system_prompt(s, u),
         tools=[types.Tool(function_declarations=[types.FunctionDeclaration(**t) for t in TOOLS])],
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
     )
@@ -163,7 +166,7 @@ def chat(s: Session, message: str, history: list[dict] | None = None) -> dict:
         for fc in calls:
             args = dict(fc.args or {})
             try:
-                result = run_tool(s, fc.name, args)
+                result = run_tool(s, u, fc.name, args)
                 ok = not (isinstance(result, dict) and "error" in result)
             except Exception as e:  # noqa: BLE001 — el error se le devuelve al modelo
                 result, ok = {"error": str(e)}, False

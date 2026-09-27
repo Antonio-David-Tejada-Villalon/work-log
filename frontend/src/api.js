@@ -1,17 +1,12 @@
 // Cliente de la API. VITE_API_URL permite usar un backend en otro dominio; vacío = mismo origen.
 const BASE = import.meta.env.VITE_API_URL || ''
 
-export function getPin() {
-  try { return localStorage.getItem('pin') || '' } catch { return '' }
-}
-export function setPin(p) {
-  try { localStorage.setItem('pin', p) } catch { /* sin almacenamiento */ }
-}
+export const apiUrl = (path) => BASE + '/api' + path
 
 export async function api(path, { method = 'GET', body } = {}) {
   const res = await fetch(BASE + '/api' + path, {
     method,
-    headers: { 'Content-Type': 'application/json', 'X-App-Pin': getPin() },
+    headers: { 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
   })
   if (!res.ok) {
@@ -28,7 +23,7 @@ export async function downloadExcel(desde, hasta) {
   const q = new URLSearchParams()
   if (desde) q.set('desde', desde)
   if (hasta) q.set('hasta', hasta)
-  const res = await fetch(`${BASE}/api/export.xlsx?${q}`, { headers: { 'X-App-Pin': getPin() } })
+  const res = await fetch(`${BASE}/api/export.xlsx?${q}`)
   if (!res.ok) throw new Error('No se pudo generar el Excel')
   const blob = await res.blob()
   const a = document.createElement('a')

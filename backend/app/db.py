@@ -1,4 +1,9 @@
-"""Conexión a la base de datos, modelos y configuración general."""
+"""Conexión a la base de datos, modelos y configuración general.
+
+Multiusuario: cada persona entra con su cuenta de Google y todo lo demás (jornadas, banco, ajustes, conexión con
+Google) pertenece a su usuario. Las tablas usan nombres propios (users, shifts, ...) para convivir con las de la
+versión de un solo usuario (shift, settings, ...), que quedan intactas como respaldo.
+"""
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,9 +64,44 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-# ---------------------------------------------------------------- modelos
+# ---------------------------------------------------------------- cuentas y acceso
+class User(SQLModel, table=True):
+    __tablename__ = "users"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    email: str = Field(index=True, unique=True)          # en minúsculas
+    name: str = ""
+    picture: str = ""
+    created_at: datetime = Field(default_factory=utcnow, sa_type=DateTime)
+    last_login: Optional[datetime] = Field(default=None, sa_type=DateTime)
+
+
+class AllowedEmail(SQLModel, table=True):
+    """Correos invitados por el dueño (OWNER_EMAIL). El dueño siempre tiene acceso."""
+    __tablename__ = "allowed_emails"
+    email: str = Field(primary_key=True)                 # en minúsculas
+    created_at: datetime = Field(default_factory=utcnow, sa_type=DateTime)
+
+
+class LoginSession(SQLModel, table=True):
+    """Sesión iniciada. Se guarda solo el hash del token que viaja en la cookie."""
+    __tablename__ = "login_sessions"
+    token_hash: str = Field(primary_key=True)
+    user_id: int = Field(foreign_key="users.id", index=True)
+    expires_at: datetime = Field(sa_type=DateTime)
+
+
+class OAuthState(SQLModel, table=True):
+    """Estado y verificador PKCE de un inicio de sesión con Google en curso (dura minutos)."""
+    __tablename__ = "oauth_states"
+    state: str = Field(primary_key=True)
+    verifier: str = ""
+    created_at: datetime = Field(default_factory=utcnow, sa_type=DateTime)
+
+
+# ---------------------------------------------------------------- datos de cada usuario
 class Settings(SQLModel, table=True):
-    id: int = Field(default=1, primary_key=True)
+    __tablename__ = "user_settings"
+    user_id: int = Field(foreign_key="users.id", primary_key=True)
     daily_hours: float = 8.0            # horas de la jornada normal
     workdays_per_month: int = 22        # para expresar el banco en "meses laborales"
     count_deficit: bool = False         # si True, las horas faltantes restan del banco
@@ -70,7 +110,9 @@ class Settings(SQLModel, table=True):
 
 class Shift(SQLModel, table=True):
     """Una jornada / tramo trabajado. Horas guardadas en UTC (sin tzinfo)."""
+    __tablename__ = "shifts"
     id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="users.id", index=True)
     start: datetime = Field(index=True, sa_type=DateTime)  # UTC sin tzinfo
     end: Optional[datetime] = Field(default=None, sa_type=DateTime)
     note: str = ""
@@ -78,6 +120,8 @@ class Shift(SQLModel, table=True):
 
 class DayOverride(SQLModel, table=True):
     """Corrección manual de las horas extra de un día."""
+    __tablename__ = "day_overrides"
+    user_id: int = Field(foreign_key="users.id", primary_key=True)
     day: str = Field(primary_key=True)  # YYYY-MM-DD
     extra_seconds: int
     note: str = ""
@@ -85,7 +129,9 @@ class DayOverride(SQLModel, table=True):
 
 class BankMovement(SQLModel, table=True):
     """Movimiento del banco de horas: negativo = horas usadas, positivo = ajuste a favor."""
+    __tablename__ = "bank_movements"
     id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="users.id", index=True)
     day: str = Field(index=True)        # YYYY-MM-DD
     seconds: int
     kind: str = "uso"                   # uso | ajuste
@@ -93,28 +139,15 @@ class BankMovement(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow, sa_type=DateTime)
 
 
-class AppPin(SQLModel, table=True):
-    """PIN de acceso creado desde la app (hash con sal) y contador de intentos fallidos."""
-    id: int = Field(default=1, primary_key=True)
-    salt: str = ""
-    digest: str = ""                    # vacío = todavía no se creó el PIN
-    fails: int = 0
-    locked_until: Optional[datetime] = Field(default=None, sa_type=DateTime)  # UTC sin tzinfo
-
-
 class GoogleToken(SQLModel, table=True):
-    id: int = Field(default=1, primary_key=True)
+    """Credenciales de Google Calendar y Tasks de cada usuario."""
+    __tablename__ = "google_tokens"
+    user_id: int = Field(foreign_key="users.id", primary_key=True)
     credentials_json: str = ""
-    pending_state: str = ""
-    pending_verifier: str = ""
 
 
 def init_db() -> None:
     SQLModel.metadata.create_all(engine)
-    with Session(engine) as s:
-        if not s.get(Settings, 1):
-            s.add(Settings(id=1))
-            s.commit()
 
 
 def get_session():
@@ -122,15 +155,16 @@ def get_session():
         yield s
 
 
-def get_settings(s: Session) -> Settings:
-    st = s.get(Settings, 1)
+def get_settings(s: Session, user_id: int) -> Settings:
+    st = s.get(Settings, user_id)
     if not st:
-        st = Settings(id=1)
+        st = Settings(user_id=user_id)
         s.add(st)
         s.commit()
         s.refresh(st)
     return st
 
 
-__all__ = ["Settings", "Shift", "DayOverride", "BankMovement", "AppPin", "GoogleToken", "engine",
-           "init_db", "get_session", "get_settings", "utcnow", "select", "Session"]
+__all__ = ["User", "AllowedEmail", "LoginSession", "OAuthState", "Settings", "Shift", "DayOverride",
+           "BankMovement", "GoogleToken", "engine", "init_db", "get_session", "get_settings", "utcnow",
+           "select", "Session", "ON_VERCEL"]
