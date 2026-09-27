@@ -1,0 +1,41 @@
+// Bootstrap 5.3 personalizado con los tokens del Design System "Control Horario".
+// ---- tema claro (valores por defecto de Bootstrap)
+$primary: #1F5C52;
+$success: #2E6B34;
+$danger: #B3261E;
+$warning: #F2B544;
+$info: #2F6690;
+$body-bg: #F6F4EF;
+$body-color: #1D2421;
+$body-secondary-color: #56605B;
+$body-tertiary-bg: #EEEBE4;
+$border-color: #D6D0C4;
+$min-contrast-ratio: 4.5;
+
+// ---- tema oscuro
+$body-bg-dark: #121614;
+$body-color-dark: #ECEFEA;
+$body-secondary-color-dark: #A7B1AC;
+$body-tertiary-bg-dark: #242B28;
+$border-color-dark: #38413C;
+$primary-text-emphasis-dark: #5FBFAE;
+$primary-bg-subtle-dark: #1E3833;
+$danger-text-emphasis-dark: #F2B8B5;
+$success-text-emphasis-dark: #8ED197;
+
+// ---- tipografía, forma y espaciado
+$font-family-sans-serif: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+$font-family-monospace: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+$font-size-base: .9375rem;          // 15px
+$headings-font-weight: 700;
+$border-radius: .5rem;              // radius-sm 8px
+$border-radius-lg: .75rem;          // radius-md 12px
+$border-radius-xl: 1.25rem;         // radius-lg 20px
+$card-border-radius: .75rem;
+$btn-padding-y: .625rem;
+$input-padding-y: .625rem;
+$focus-ring-width: 3px;
+$focus-ring-opacity: .35;
+$enable-negative-margins: true;
+
+@import "bootstrap/scss/bootstrap";

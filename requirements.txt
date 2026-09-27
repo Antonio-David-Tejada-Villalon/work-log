@@ -1,0 +1,11 @@
+fastapi>=0.141
+uvicorn[standard]>=0.30
+sqlmodel>=0.0.22
+openpyxl>=3.1
+google-genai>=2.0
+google-auth>=2.30
+google-auth-oauthlib>=1.2
+google-api-python-client>=2.130
+psycopg[binary]>=3.2
+python-multipart>=0.0.9
+tzdata>=2024.1
